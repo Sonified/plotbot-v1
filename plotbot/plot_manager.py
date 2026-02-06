@@ -1,0 +1,1423 @@
+#plotbot/plot_manager.py
+# 🎉 Extend numpy.ndarray with plotting functionality and friendly error handling 🎉
+#SAFE! 
+
+import numpy as np
+import pandas as pd
+import logging
+# ✨ Matplotlib lazy-loaded on first use (saves ~0.4s at import)
+_plt = None
+def _get_plt():
+    global _plt
+    if _plt is None:
+        import matplotlib.pyplot
+        _plt = matplotlib.pyplot
+    return _plt
+
+from .plot_config import plot_config
+from .print_manager import print_manager
+from .data_classes.custom_variables import custom_variable  # UPDATED PATH
+
+class plot_manager(np.ndarray):
+    
+    PLOT_ATTRIBUTES = [
+        'data', 'data_type', 'var_name', 'class_name', 'subclass_name', 'plot_type', 'time', 'datetime_array', 
+        'y_label', 'legend_label', 'color', 'y_scale', 'y_limit', 'line_width',
+        'line_style', 'colormap', 'colorbar_scale', 'colorbar_limits',
+        'additional_data', 'colorbar_label', 'is_derived', 'source_var', 'operation',
+        'requested_trange',
+
+        # Add missing attributes
+        'marker', 'marker_size', 'alpha', 'marker_style' #, 'zorder', 'legend_label_override'
+    ]
+
+    # Set up class-level interpolation settings
+    interp_method = 'nearest'  # Default interpolation method ('nearest' or 'linear')
+
+    def __new__(cls, input_array, plot_config=None):
+        # Handle None input by converting to empty float64 array
+        # This allows numpy operations (arctan2, degrees, etc.) to work on uninitialized plot_managers
+        if input_array is None:
+            input_array = np.array([], dtype=np.float64)
+        obj = np.asarray(input_array).view(cls)
+        # Add this new section for plot state
+        if hasattr(input_array, '_plot_state'):
+            obj._plot_state = dict(input_array._plot_state)
+        else:
+            obj._plot_state = {}
+        
+        from .print_manager import print_manager
+        # Require plot_config to be provided
+        if plot_config is None:
+            raise ValueError("plot_config must be provided when creating a plot_manager instance")
+        
+        print_manager.zarr_integration(f"Using plot_config: data_type={getattr(plot_config, 'data_type', 'None')}, class={getattr(plot_config, 'class_name', 'None')}, subclass={getattr(plot_config, 'subclass_name', 'None')}")
+        
+        # Keep existing code with better error handling
+        if hasattr(input_array, '_original_options'):
+            obj._original_options = input_array._original_options
+        else:
+            # Safely create original options
+            try:
+                from .plot_config import plot_config as plot_config_class
+                if hasattr(plot_config, '__dict__'):
+                    obj._original_options = plot_config_class(**vars(plot_config))
+                else:
+                    # Handle case where plot_config doesn't have __dict__
+                    obj._original_options = plot_config_class() if not isinstance(plot_config, dict) else plot_config_class(**plot_config)
+            except Exception as e:
+                # Fallback to empty options
+                from .print_manager import print_manager
+                print_manager.warning(f"Error creating plot options: {str(e)}, using empty options")
+                from .plot_config import plot_config as plot_config_class
+                obj._original_options = plot_config_class()
+        
+        obj.plot_config = plot_config
+        return obj
+
+    def __array__(self, dtype=None):
+        # Create a new plot_manager instead of just returning the array
+        arr = np.asarray(self.view(np.ndarray), dtype=dtype)
+        return plot_manager(arr, self.plot_config)
+
+    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        """
+        Capture numpy ufuncs (np.abs, np.sqrt, etc.) for custom variable replay!
+        This allows us to store WHICH operation was performed, so we can replay it
+        with fresh data for different time ranges.
+        """
+        from .print_manager import print_manager
+        
+        # Convert plot_manager inputs to regular numpy arrays for the operation
+        args = []
+        for i in inputs:
+            if isinstance(i, plot_manager):
+                # Use .data property to get time-clipped view, not raw accumulated array!
+                args.append(i.data)
+            else:
+                args.append(i)
+        
+        # Perform the actual ufunc operation
+        outputs = kwargs.pop('out', None)
+        if outputs:
+            out_args = []
+            for j, output in enumerate(outputs):
+                if isinstance(output, plot_manager):
+                    # Use .data property to get time-clipped view
+                    out_args.append(output.data)
+                else:
+                    out_args.append(output)
+            kwargs['out'] = tuple(out_args) if len(out_args) > 1 else out_args[0]
+        else:
+            outputs = (None,) * ufunc.nout
+        
+        # Call the ufunc
+        results = getattr(ufunc, method)(*args, **kwargs)
+        
+        if results is NotImplemented:
+            return NotImplemented
+        
+        if method == '__call__':
+            if ufunc.nout == 1:
+                results = (results,)
+            
+            # Find ALL plot_manager inputs for binary ufuncs (e.g., arctan2)
+            source_pms = []
+            for i in inputs:
+                if isinstance(i, plot_manager):
+                    source_pms.append(i)
+            
+            if len(source_pms) > 0:
+                # Create new plot_manager with result, copying plot_config from first source
+                from .plot_config import plot_config
+                new_plot_config = plot_config(**source_pms[0].plot_config.__dict__)
+                result_pm = plot_manager(results[0], plot_config=new_plot_config)
+                
+                # 🎯 KEY: Store which ufunc was used AND ALL source variable(s)
+                # This is critical for binary ufuncs like arctan2(br, bn) - we need BOTH sources!
+                object.__setattr__(result_pm, 'operation', ufunc.__name__)  # e.g., 'absolute', 'sqrt', 'arctan2'
+                object.__setattr__(result_pm, 'source_var', source_pms)  # ✅ FIX: Capture ALL sources
+                
+                print_manager.custom_debug(f"🎯 [UFUNC_CAPTURE] Captured ufunc: {ufunc.__name__}")
+                for idx, src in enumerate(source_pms):
+                    print_manager.custom_debug(f"🎯 [UFUNC_CAPTURE] Source {idx+1}: {src.plot_config.class_name}.{src.plot_config.subclass_name}")
+                
+                # Copy datetime_array from first source
+                if hasattr(source_pms[0], 'datetime_array'):
+                    src_datetime = getattr(source_pms[0], 'datetime_array', None)
+                    if src_datetime is not None:
+                        result_pm.plot_config.datetime_array = src_datetime.copy() if hasattr(src_datetime, 'copy') else src_datetime
+                
+                return result_pm if ufunc.nout == 1 else tuple([result_pm])
+        
+        # Fallback to numpy behavior
+        return results
+
+    def __array_wrap__(self, out_arr, context=None):
+        if context is not None:
+            # For ufuncs (like addition, subtraction, etc.), return a new plot_manager with the same options
+            ufunc = context
+            args = context
+            # Check if any of the arguments are plot_manager instances
+            has_plot_manager = any(isinstance(arg, self.__class__) for arg in args)
+            if has_plot_manager:
+                # If so, preserve the plot_config from the first plot_manager argument
+                plot_config_found = next((arg.plot_config for arg in args if isinstance(arg, self.__class__)), None)
+                return self.__class__(out_arr, plot_config=plot_config_found)
+        # For other operations, return a regular numpy array
+        return np.ndarray.__array_wrap__(self, out_arr, context)
+    
+    def __array_finalize__(self, obj):
+        if obj is None:
+            return
+        # Always ensure _plot_state exists
+        self._plot_state = getattr(obj, '_plot_state', None)
+        if self._plot_state is None:
+            self._plot_state = {}
+        else:
+            self._plot_state = dict(self._plot_state)
+        # Always ensure plot_config exists
+        # 🐛 BUG FIX: COPY plot_config instead of sharing reference!
+        # When np.abs() or other operations create new arrays, they were sharing
+        # the same plot_config object, causing metadata changes to affect both!
+        obj_plot_config = getattr(obj, 'plot_config', None)
+        if obj_plot_config is None:
+            from .plot_config import plot_config
+            self.plot_config = plot_config()
+        else:
+            # Create a COPY of the plot_config
+            from .plot_config import plot_config
+            self.plot_config = plot_config(**obj_plot_config.__dict__)
+            
+            # 🐛 BUG FIX: Also copy datetime_array from source object's DIRECT attribute!
+            # numpy ufuncs create new arrays where plot_config might not have datetime_array yet
+            if hasattr(obj, 'datetime_array'):
+                src_datetime = getattr(obj, 'datetime_array', None)
+                if src_datetime is not None:
+                    self.plot_config.datetime_array = src_datetime.copy() if hasattr(src_datetime, 'copy') else src_datetime
+        
+        # 🐛 BUG FIX: Copy source_var for dependency tracking!
+        # Numpy ufuncs bypass _perform_operation(), so we need to copy source_var here
+        if hasattr(obj, 'source_var'):
+            # Create list with just the source object for unary operations
+            object.__setattr__(self, 'source_var', [obj])
+            # Also set a generic operation name for numpy ufuncs
+            # This allows update() to know an operation was performed
+            object.__setattr__(self, 'operation', 'ufunc')
+        
+        if not hasattr(self, '_original_options'):
+            self._original_options = getattr(obj, '_original_options', None)
+
+    def __bool__(self):
+        # A plot_manager instance is considered "True" if its underlying
+        # NumPy array representation has at least one element.
+        try:
+            # self.size is an attribute of np.ndarray, giving total number of elements
+            return self.size > 0
+        except AttributeError:
+            # Fallback in case self.size isn't available (e.g., during partial initialization)
+            # or if self is not a valid ndarray view at the moment of the check.
+            return False
+
+    @property
+    def requested_trange(self):
+        """Get the currently set time range"""
+        return getattr(self, '_requested_trange', None)
+    
+    @requested_trange.setter
+    def requested_trange(self, value):
+        """Set time range and perform clipping ONCE when set"""
+        if value is None:
+            # Clear clipped data when trange is cleared
+            self._requested_trange = None
+            self._clipped_data = None
+            self._clipped_datetime_array = None
+            self._clipped_time = None  # BUGFIX: Also clear _clipped_time
+            return
+
+        # Only clip if the trange has actually changed
+        if getattr(self, '_requested_trange', None) == value:
+            return  # No change, don't reclip
+
+        self._requested_trange = value
+
+        # 🚀 PERFORMANCE FIX: Clip ONCE when trange is set, not on every property access
+        from .print_manager import print_manager
+        print_manager.debug(f"⚡ [CLIP_ONCE] Clipping data ONCE for trange: {value}")
+
+        # Debug: Check sizes before clipping
+        raw_data = self.view(np.ndarray)
+        print_manager.custom_debug(f"[CLIP] Setting requested_trange: {value}")
+        print_manager.custom_debug(f"[CLIP]   Raw data size: {len(raw_data)}")
+        print_manager.custom_debug(f"[CLIP]   datetime_array size: {len(self.plot_config.datetime_array) if self.plot_config.datetime_array is not None else 0}")
+
+        # Perform clipping once and store results
+        self._clipped_data = self.clip_to_original_trange(raw_data, value)
+        print_manager.custom_debug(f"[CLIP]   Clipped data size: {len(self._clipped_data) if self._clipped_data is not None else 0}")
+
+        if self.plot_config.datetime_array is not None:
+            # Clip datetime_array and get indices
+            self._clipped_datetime_array, time_indices = self._clip_datetime_array_with_indices(self.plot_config.datetime_array, value)
+            print_manager.custom_debug(f"[CLIP]   Clipped datetime_array size: {len(self._clipped_datetime_array) if self._clipped_datetime_array is not None else 0}")
+
+            # BUGFIX: Also clip .time using same indices as datetime_array
+            if self.plot_config.time is not None and time_indices is not None:
+                self._clipped_time = self.plot_config.time[time_indices]
+                print_manager.custom_debug(f"[CLIP]   Clipped time size: {len(self._clipped_time) if self._clipped_time is not None else 0}")
+            else:
+                self._clipped_time = None
+        else:
+            self._clipped_datetime_array = None
+            self._clipped_time = None
+    
+    @property
+    def data(self):
+        """Return the time clipped numpy array data"""
+        from .print_manager import print_manager
+        from .time_utils import TimeRangeTracker
+
+        # Auto-update if current trange differs from cached trange (LAZY CLIPPING!)
+        current_trange = TimeRangeTracker.get_current_trange()
+        if current_trange and current_trange != getattr(self, '_requested_trange', None):
+            print_manager.custom_debug(f"[DATA] Auto-updating requested_trange from {getattr(self, '_requested_trange', None)} to {current_trange}")
+            self.requested_trange = current_trange  # Triggers clipping via setter
+
+        # Return pre-clipped data if available (ZERO CLIPPING OVERHEAD!)
+        if hasattr(self, '_clipped_data') and self._clipped_data is not None:
+            print_manager.custom_debug(f"[DATA] Returning clipped data: {len(self._clipped_data)} points")
+            return self._clipped_data
+
+        # Otherwise return full array
+        full_array = self.view(np.ndarray)
+        print_manager.custom_debug(f"[DATA] No clipped data, returning full array: {len(full_array)} points")
+        return full_array
+    
+    @property
+    def all_data(self):
+        """Return all the unclipped numpy array data for internal use"""
+        return np.array(self)
+    
+    def _clip_datetime_array(self, datetime_array, original_trange):
+        """Helper method to clip datetime array without circular dependency"""
+        from dateutil.parser import parse
+        import pandas as pd
+        import numpy as np
+        from datetime import timezone
+        from .print_manager import print_manager
+
+        if datetime_array is None:
+            return None
+
+        # Parse time range strings to UTC-aware datetimes
+        start_time = parse(original_trange[0]).replace(tzinfo=timezone.utc)
+        end_time = parse(original_trange[1]).replace(tzinfo=timezone.utc)
+
+        # 🐛 BUG FIX: Handle 2D datetime arrays (meshgrids) correctly
+        # For 2D datetime arrays (e.g., epad times_mesh), extract just the time axis
+        if datetime_array.ndim == 2:
+            # For meshgrids, times are along axis 0, repeated across axis 1
+            # Extract first column to get unique time values
+            datetime_array_1d = datetime_array[:, 0]
+        else:
+            datetime_array_1d = datetime_array
+
+        datetime_array_pd = pd.to_datetime(datetime_array_1d, utc=True)
+
+        # Create boolean mask for the time range
+        time_mask = (datetime_array_pd >= start_time) & (datetime_array_pd <= end_time)
+
+        if not np.any(time_mask):
+            # Return empty datetime array with proper shape
+            if datetime_array.ndim == 1:
+                return np.array([], dtype=datetime_array.dtype)
+            else:
+                # For 2D arrays, return (0, n_cols) shape
+                empty_shape = (0,) + datetime_array.shape[1:]
+                return np.empty(empty_shape, dtype=datetime_array.dtype)
+        
+        # Apply mask to datetime array while preserving dimensions
+        if datetime_array.ndim == 1:
+            # For 1D arrays, boolean indexing is fine
+            return datetime_array[time_mask]
+        else:
+            # For multidimensional arrays, use indices to prevent flattening
+            time_indices = np.where(time_mask)[0]
+            return datetime_array[time_indices, ...]  # Preserve all other dimensions
+
+    def _clip_datetime_array_with_indices(self, datetime_array, original_trange):
+        """Helper method to clip datetime array and return indices for clipping other arrays"""
+        from dateutil.parser import parse
+        import pandas as pd
+        import numpy as np
+        from datetime import timezone
+        from .print_manager import print_manager
+
+        if datetime_array is None:
+            return None, None
+
+        # Parse time range strings to UTC-aware datetimes
+        start_time = parse(original_trange[0]).replace(tzinfo=timezone.utc)
+        end_time = parse(original_trange[1]).replace(tzinfo=timezone.utc)
+
+        # Handle 2D datetime arrays (meshgrids) correctly
+        if datetime_array.ndim == 2:
+            datetime_array_1d = datetime_array[:, 0]
+        else:
+            datetime_array_1d = datetime_array
+
+        datetime_array_pd = pd.to_datetime(datetime_array_1d, utc=True)
+
+        # Create boolean mask for the time range
+        time_mask = (datetime_array_pd >= start_time) & (datetime_array_pd <= end_time)
+
+        if not np.any(time_mask):
+            # Return empty datetime array with proper shape
+            if datetime_array.ndim == 1:
+                return np.array([], dtype=datetime_array.dtype), np.array([], dtype=np.int64)
+            else:
+                empty_shape = (0,) + datetime_array.shape[1:]
+                return np.empty(empty_shape, dtype=datetime_array.dtype), np.array([], dtype=np.int64)
+
+        # Get indices and apply to datetime array
+        time_indices = np.where(time_mask)[0]
+
+        if datetime_array.ndim == 1:
+            return datetime_array[time_mask], time_indices
+        else:
+            return datetime_array[time_indices, ...], time_indices
+
+    def clip_to_original_trange(self, data_array, original_trange, datetime_array=None):
+        """Clip data array to the specified time range using ChatGPT's improved approach"""
+        from dateutil.parser import parse
+        import pandas as pd
+        import numpy as np
+        from datetime import timezone
+        from .print_manager import print_manager
+
+        print_manager.debug(f"🔍 [DEBUG] clip_to_original_trange called with trange: {original_trange}")
+
+        if datetime_array is None:
+            # Use the ORIGINAL datetime array from plot_config, not the property
+            datetime_array = self.plot_config.datetime_array
+
+        if datetime_array is None:
+            print_manager.custom_debug("⚠️ No datetime array available, returning full data")
+            return data_array
+
+        # Parse time range strings to UTC-aware datetimes
+        start_time = parse(original_trange[0]).replace(tzinfo=timezone.utc)
+        end_time = parse(original_trange[1]).replace(tzinfo=timezone.utc)
+
+        # 🐛 BUG FIX: Handle 2D datetime arrays (meshgrids) correctly
+        # For 2D datetime arrays (e.g., epad times_mesh), extract just the time axis
+        if datetime_array.ndim == 2:
+            # For meshgrids, times are along axis 0, repeated across axis 1
+            # Extract first column to get unique time values
+            datetime_array_1d = datetime_array[:, 0]
+            print_manager.debug(f"🔍 [DEBUG] Detected 2D datetime_array {datetime_array.shape}, extracting time axis: {datetime_array_1d.shape}")
+        else:
+            datetime_array_1d = datetime_array
+
+        datetime_array_pd = pd.to_datetime(datetime_array_1d, utc=True)
+
+        # Create boolean mask for the time range
+        time_mask = (datetime_array_pd >= start_time) & (datetime_array_pd <= end_time)
+
+        if not np.any(time_mask):
+            print_manager.custom_debug("⚠️ No data in requested time range")
+            # Return empty array with same trailing dimensions
+            empty_shape = (0,) + data_array.shape[1:] if data_array.ndim > 1 else (0,)
+            return np.empty(empty_shape, dtype=data_array.dtype)
+
+        print_manager.debug(f"🔍 [DEBUG] Clipping {len(data_array)} points to {np.sum(time_mask)} points in range")
+        
+        # Apply mask on the time axis (axis 0) while preserving other dimensions
+        if data_array.ndim == 1:
+            # For 1D arrays, boolean indexing is fine
+            return data_array[time_mask]
+        else:
+            # For multidimensional arrays, use indices to prevent flattening
+            time_indices = np.where(time_mask)[0]
+            return data_array[time_indices, ...]  # Preserve all other dimensions
+
+    # Properties for data_type, class_name and subclass_name
+    @property
+    def data_type(self):
+        return self.plot_config.data_type
+        
+    @data_type.setter
+    def data_type(self, value):
+        self._plot_state['data_type'] = value
+        self.plot_config.data_type = value
+
+    @property
+    def class_name(self):
+        return self.plot_config.class_name
+
+    @class_name.setter 
+    def class_name(self, value):
+        self._plot_state['class_name'] = value
+        self.plot_config.class_name = value
+
+    @property
+    def subclass_name(self):
+        return self.plot_config.subclass_name
+
+    @subclass_name.setter
+    def subclass_name(self, value):
+        self._plot_state['subclass_name'] = value
+        self.plot_config.subclass_name = value
+
+    @property
+    def plot_type(self):
+        return self.plot_config.plot_type
+
+    @plot_type.setter
+    def plot_type(self, value):
+        self._plot_state['plot_type'] = value
+        self.plot_config.plot_type = value
+        
+    @property
+    def var_name(self):
+        return self.plot_config.var_name
+
+    @var_name.setter
+    def var_name(self, value):
+        self._plot_state['var_name'] = value
+        self.plot_config.var_name = value
+
+    @property
+    def datetime_array(self):
+        """Return the time clipped datetime array to match .data property"""
+        from .time_utils import TimeRangeTracker
+
+        # Auto-update if current trange differs from cached trange (LAZY CLIPPING!)
+        current_trange = TimeRangeTracker.get_current_trange()
+        if current_trange and current_trange != getattr(self, '_requested_trange', None):
+            self.requested_trange = current_trange  # Triggers clipping via setter
+
+        # Return pre-clipped datetime array if available (ZERO CLIPPING OVERHEAD!)
+        if hasattr(self, '_clipped_datetime_array') and self._clipped_datetime_array is not None:
+            return self._clipped_datetime_array
+
+        # Otherwise return full datetime array
+        return self.plot_config.datetime_array
+
+    @datetime_array.setter
+    def datetime_array(self, value):
+        # FIX: For safety, directly use __setattr__ rather than going through _plot_state
+        # which can trigger truth value evaluation of arrays
+        try:
+            # First update the plot_config directly
+            if hasattr(self.plot_config, '_datetime_array'):
+                self.plot_config._datetime_array = value
+            else:
+                object.__setattr__(self.plot_config, 'datetime_array', value)
+                
+            # Then update the _plot_state dictionary if needed
+            if hasattr(self, '_plot_state'):
+                self._plot_state['datetime_array'] = value
+        except Exception as e:
+            from .print_manager import print_manager
+            print_manager.warning(f"Error setting datetime_array: {str(e)}")
+    
+    @property
+    def time(self):
+        """Return the time clipped raw epoch time array to match .data property"""
+        from .time_utils import TimeRangeTracker
+
+        # Auto-update if current trange differs from cached trange (LAZY CLIPPING!)
+        current_trange = TimeRangeTracker.get_current_trange()
+        if current_trange and current_trange != getattr(self, '_requested_trange', None):
+            self.requested_trange = current_trange  # Triggers clipping via setter
+
+        # BUGFIX: Return clipped time array (now properly cached in setter)
+        if hasattr(self, '_clipped_time') and self._clipped_time is not None:
+            return self._clipped_time
+
+        # Otherwise return full time array
+        return self.plot_config.time
+    
+    @time.setter
+    def time(self, value):
+        # FIX: For safety, directly use __setattr__ rather than going through _plot_state
+        # which can trigger truth value evaluation of arrays
+        try:
+            # First update the plot_config directly
+            if hasattr(self.plot_config, '_time'):
+                self.plot_config._time = value
+            else:
+                object.__setattr__(self.plot_config, 'time', value)
+                
+            # Then update the _plot_state dictionary if needed
+            if hasattr(self, '_plot_state'):
+                self._plot_state['time'] = value
+        except Exception as e:
+            from .print_manager import print_manager
+            print_manager.warning(f"Error setting time: {str(e)}")
+        
+    @property
+    def y_label(self):
+        return self.plot_config.y_label
+
+    @y_label.setter
+    def y_label(self, value):
+        self._plot_state['y_label'] = value
+        self.plot_config.y_label = value
+        
+    @property
+    def legend_label(self):
+        return self.plot_config.legend_label
+
+    @legend_label.setter
+    def legend_label(self, value):
+        self._plot_state['legend_label'] = value
+        self.plot_config.legend_label = value
+
+    @property
+    def color(self):
+        return self.plot_config.color
+
+    @color.setter
+    def color(self, value):
+        self._plot_state['color'] = value
+        self.plot_config.color = value
+        
+    @property
+    def y_scale(self):
+        return self.plot_config.y_scale
+
+    @y_scale.setter
+    def y_scale(self, value):
+        self._plot_state['y_scale'] = value
+        self.plot_config.y_scale = value
+        
+    @property
+    def y_limit(self):
+        return self.plot_config.y_limit
+
+    @y_limit.setter
+    def y_limit(self, value):
+        self._plot_state['y_limit'] = value
+        self.plot_config.y_limit = value
+        
+    @property
+    def line_width(self):
+        return self.plot_config.line_width
+
+    @line_width.setter
+    def line_width(self, value):
+        self._plot_state['line_width'] = value
+        self.plot_config.line_width = value
+        
+    @property
+    def line_style(self):
+        return self.plot_config.line_style
+
+    @line_style.setter
+    def line_style(self, value):
+        self._plot_state['line_style'] = value
+        self.plot_config.line_style = value
+        
+    @property
+    def colormap(self):
+        return self.plot_config.colormap
+
+    @colormap.setter
+    def colormap(self, value):
+        self._plot_state['colormap'] = value
+        self.plot_config.colormap = value
+        
+    @property
+    def colorbar_scale(self):
+        return self.plot_config.colorbar_scale
+
+    @colorbar_scale.setter
+    def colorbar_scale(self, value):
+        self._plot_state['colorbar_scale'] = value
+        self.plot_config.colorbar_scale = value
+        
+    @property
+    def colorbar_limits(self):
+        return self.plot_config.colorbar_limits
+
+    @colorbar_limits.setter
+    def colorbar_limits(self, value):
+        self._plot_state['colorbar_limits'] = value
+        self.plot_config.colorbar_limits = value
+        
+    @property
+    def additional_data(self):
+        return self.plot_config.additional_data
+
+    @additional_data.setter
+    def additional_data(self, value):
+        self._plot_state['additional_data'] = value
+        self.plot_config.additional_data = value
+        
+    @property
+    def colorbar_label(self):
+        if hasattr(self, '_colorbar_label'):
+            return self._colorbar_label
+        return getattr(self.plot_config, 'colorbar_label', None)
+        
+    @colorbar_label.setter
+    def colorbar_label(self, value):
+        self._plot_state['colorbar_label'] = value
+        self._colorbar_label = value
+        setattr(self.plot_config, 'colorbar_label', value)
+
+    # New properties for derived variable handling
+    @property
+    def source_class_names(self):
+        if hasattr(self, '_source_class_names'):
+            return self._source_class_names
+        return getattr(self.plot_config, 'source_class_names', None)
+        
+    @source_class_names.setter
+    def source_class_names(self, value):
+        self._plot_state['source_class_names'] = value
+        self._source_class_names = value
+        setattr(self.plot_config, 'source_class_names', value)
+        
+    @property
+    def source_subclass_names(self):
+        if hasattr(self, '_source_subclass_names'):
+            return self._source_subclass_names
+        return getattr(self.plot_config, 'source_subclass_names', None)
+        
+    @source_subclass_names.setter
+    def source_subclass_names(self, value):
+        self._plot_state['source_subclass_names'] = value
+        self._source_subclass_names = value
+        setattr(self.plot_config, 'source_subclass_names', value)
+
+    #Inline friendly error handling in __setattr__, consistent with your style
+    def __setattr__(self, name, value):
+        # Allow direct setting of dunder OR single underscore methods/attributes
+        if name.startswith('_'): # Check for either '__' or '_' start
+            object.__setattr__(self, name, value)
+            return
+        try:
+            if name in ['plot_config', '__dict__', '__doc__', '__module__', '_ipython_display_', '_original_options'] or name.startswith('_'):
+                # Directly set these special or private attributes
+                super().__setattr__(name, value)
+                return
+            
+            if name in self.PLOT_ATTRIBUTES:
+                if value == 'default':
+                    print_manager.datacubby(f"DEFAULT RECEIVED_value={value}")
+                    # First remove from plot state (like reset does)
+                    if name in self._plot_state:
+                        del self._plot_state[name]
+                        print_manager.datacubby("action='remove_from_plot_state'")
+                    # Then set to original value
+                    if hasattr(self._original_options, name):
+                        setattr(self.plot_config, name, getattr(self._original_options, name))
+                        print_manager.datacubby(f"Attribute name: {name}, Attribute value: {getattr(self.plot_config, name)}")
+                    else:
+                        print_manager.warning(f"No default value found for {name}")
+                    return
+                if name == 'color':
+                    if value is None:
+                        # None is a valid color (use default/auto)
+                        pass
+                    else:
+                        try:
+                            import matplotlib.colors
+                            matplotlib.colors.to_rgb(value)
+                        except ValueError:
+                            print_manager.warning(f"'{value}' is not a recognized color, friend!")
+                            print("Try one of these:")
+                            print(f"- Default: 'default' (sets to the original color: {self._original_options.color})")
+                            print("- Reds: red, darkred, crimson, salmon, coral, tomato, firebrick, indianred")
+                            print("- Oranges: orange, darkorange, peachpuff, sandybrown, coral") 
+                            print("- Yellows: yellow, gold, khaki, moccasin, palegoldenrod")
+                            print("- Greens: green, darkgreen, forestgreen, lime, seagreen, olive, springgreen, palegreen")
+                            print("- Blues: blue, navy, royalblue, skyblue, cornflowerblue, steelblue, deepskyblue")
+                            print("- Indigos: indigo, slateblue, mediumslateblue, darkslateblue")
+                            print("- Violets: violet, purple, magenta, orchid, plum, mediumorchid")
+                            print("- Neutrals: black, white, grey, silver, dimgray, lightgray")
+                            print("- Or use any hex code like '#FF0000'")
+                            return
+                        
+                elif name == 'y_scale':
+                    if value not in ['linear', 'log']:
+                        print_manager.warning(f"'{value}' is not a valid y-axis scale, friend!")
+                        print("Try 'linear' or 'log'.")
+                        return
+                        
+                elif name == 'line_style':
+                    valid_styles = ['-', '--', '-.', ':', 'None', ' ', '']
+                    if value not in valid_styles:
+                        print_manager.warning('Manager setattr helper!')
+                        print(f"'{value}' is not a valid line style, friend!")
+                        print(f"Try one of these: {', '.join(valid_styles)}")
+                        return
+                        
+                elif name == 'marker':
+                    valid_markers = ['o', 's', '^', 'v', '<', '>', 'D', 'p', '*', 'h', '+', 'x', '.', ',', 'None', None]
+                    if value not in valid_markers:
+                        print_manager.debug('Manager setattr helper!')
+                        print(f"'{value}' is not a valid marker, friend!")
+                        print(f"Try one of these: {', '.join(str(m) for m in valid_markers if m)}")
+                        return
+                        
+                elif name in ['line_width', 'marker_size', 'alpha']:
+                    # Validate that value is numeric
+                    try:
+                        numeric_value = float(value)
+                        if name == 'alpha' and not 0 <= numeric_value <= 1:
+                            print_manager.debug('Manager setattr helper!')
+                            print(f"Alpha must be between 0 and 1, friend! You tried: {value}")
+                            return
+                        if numeric_value < 0:
+                            print_manager.debug('Manager setattr helper!')
+                            print(f"{name} can't be negative, friend! You tried: {value}")
+                            return
+                    except ValueError:
+                        print_manager.debug('Manager setattr helper!')
+                        print(f"{name} must be a numeric value, friend! You tried: {value}")
+                        return
+                        
+                elif name == 'y_limit':
+                    # Validate y_limit if it is not None
+                    if value is not None:
+                        if not isinstance(value, (list, tuple)) or len(value) != 2:
+                            print_manager.debug('Manager setattr helper!')
+                            print(f"y_limit must be a tuple/list of two values, friend! You tried: {value}")
+                            return
+                        if not all(isinstance(v, (int, float)) for v in value):
+                            print_manager.debug('Manager setattr helper!')
+                            print(f"y_limit values must be numeric, friend! You tried: {value}")
+                            return
+                        if value[0] >= value[1]:
+                            print_manager.debug('Manager setattr helper!')
+                            print(f"y_limit min must be less than max, friend! You tried: {value}")
+                            return
+
+                # If validation passes or not needed, use property setter to maintain consistency
+                super().__setattr__(name, value)
+                return
+
+            else:
+                # For unrecognized attributes, provide a friendly error
+                print_manager.debug('Manager message:')
+                print(f"[Plot Manager] '{name}' is not a recognized attribute, friend!")
+                print(f"[Plot Manager] Try one of these: {', '.join(self.PLOT_ATTRIBUTES)}")
+                return
+
+        except Exception as e:
+            print_manager.warning(f"Error setting {name}: {str(e)}")
+
+    # Attribute access handler for dynamic attributes
+    def __getattr__(self, name):
+        # Allow direct access to dunder OR single underscore methods/attributes
+        if name.startswith('_'): # Check for either '__' or '_' start
+            try:
+                # Important: Use object.__getattribute__ for these
+                return object.__getattribute__(self, name)
+            except AttributeError:
+                # Let AttributeError propagate if internal/dunder doesn't exist
+                raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+        # If _plot_state is missing, initialize it and warn (except if directly accessing _plot_state)
+        if name == '_plot_state':
+            if '_plot_state' not in self.__dict__:
+                self._plot_state = {}
+            return self._plot_state
+        elif '_plot_state' not in self.__dict__:
+            self._plot_state = {}
+        # Fallback: If plot_config is missing, auto-initialize and warn
+        if 'plot_config' not in self.__dict__ or self.plot_config is None:
+            from .plot_config import plot_config
+            self.plot_config = plot_config()
+        if hasattr(self, '_plot_state') and name in self._plot_state:
+            return self._plot_state[name]
+        # This is only called if an attribute is not found 
+        # in the normal places (i.e., not found in __dict__ and not a dynamic attribute).
+        # For recognized attributes, return from plot_config if available
+        if name in self.PLOT_ATTRIBUTES:
+            return getattr(self.plot_config, name, None)
+        # For unrecognized attributes (not found in _plot_state or as a PLOT_ATTRIBUTE)
+        if not name.startswith('_'): # Ensure it's not an internal attribute we missed
+            # Behavior for trying to GET an unrecognized attribute:
+            # Warn and return None, but do not store it.
+            print_manager.warning(f"Warning: '{name}' is not a recognized attribute for {self.__class__.__name__}. Returning None.")
+            return None
+        # If it's an underscore attribute not caught by the initial check in this method
+        # (object.__getattribute__) and it's not a recognized plot state or option,
+        # it implies a missing dunder/internal attribute or a misconfiguration.
+        # Standard behavior is to raise AttributeError.
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+
+    def _set_plot_option(self, attribute, value):
+        if not self.plot_config:
+            self.plot_config = plot_config()
+        setattr(self.plot_config, attribute, value)
+        
+    @staticmethod
+    def interpolate_to_times(source_times, source_values, target_times, method='nearest'):
+        """
+        Interpolate source values to align with target times.
+        
+        Parameters
+        ----------
+        source_times : array-like
+            Original datetime array (can be Python datetime or numpy.datetime64)
+        source_values : array-like
+            Original values to interpolate
+        target_times : array-like
+            Target datetime array to interpolate to
+        method : str
+            Interpolation method ('nearest' or 'linear')
+            
+        Returns
+        -------
+        numpy.ndarray
+            Values interpolated to match target_times
+        """
+        from scipy import interpolate
+        import matplotlib.dates as mdates
+        import numpy as np
+        from .print_manager import print_manager
+        
+        print_manager.variable_testing(f"Starting interpolation: method={method}, source_length={len(source_times)}, target_length={len(target_times)}")
+        
+        # Convert datetime arrays to numeric for interpolation
+        # Handle both Python datetime and numpy.datetime64 objects
+        try:
+            # For Python datetime objects
+            source_numeric = mdates.date2num(source_times)
+            target_numeric = mdates.date2num(target_times)
+        except (ValueError, TypeError):
+            # For numpy.datetime64 objects
+            # Convert to seconds since epoch
+            source_numeric = source_times.astype('datetime64[s]').astype(np.float64)
+            target_numeric = target_times.astype('datetime64[s]').astype(np.float64)
+            print_manager.variable_testing("Using numpy datetime64 conversion to numeric")
+        
+        # Skip interpolation if the times are already aligned
+        if len(source_times) == len(target_times) and np.array_equal(source_numeric, target_numeric):
+            print_manager.variable_testing("Times already aligned, skipping interpolation")
+            return source_values
+        
+        # Handle NaN values in source data
+        valid_mask = ~np.isnan(source_values)
+        if not np.any(valid_mask):
+            print_manager.variable_testing("All source values are NaN, returning NaN array")
+            return np.full_like(target_numeric, np.nan)
+        
+        if not np.all(valid_mask):
+            print_manager.variable_testing(f"Removing {len(source_values) - np.sum(valid_mask)} NaN values from source data")
+            source_numeric = source_numeric[valid_mask]
+            source_values = source_values[valid_mask]
+            print_manager.variable_testing(f"Source data length after NaN removal: {len(source_values)}")
+        
+        # Create interpolation function
+        if method == 'nearest':
+            print_manager.variable_testing("Using nearest-neighbor interpolation")
+            f = interpolate.interp1d(
+                source_numeric, source_values,
+                kind='nearest',
+                bounds_error=False,
+                fill_value=np.nan
+            )
+        else:  # linear
+            print_manager.variable_testing("Using linear interpolation")
+            f = interpolate.interp1d(
+                source_numeric, source_values,
+                kind='linear',
+                bounds_error=False,
+                fill_value=np.nan
+            )
+        
+        # Perform interpolation
+        interpolated_values = f(target_numeric)
+        print_manager.variable_testing(f"Interpolation complete. Result length: {len(interpolated_values)}")
+        
+        # Check for NaNs in the result
+        nan_count = np.sum(np.isnan(interpolated_values))
+        if nan_count > 0:
+            print_manager.variable_testing(f"Warning: {nan_count} NaN values in interpolated result")
+        
+        return interpolated_values
+
+    def align_variables(self, other):
+        """
+        Align two variables by time, interpolating as needed.
+        
+        This method compares timestamps between variables and performs
+        interpolation to ensure they match for element-wise operations.
+        
+        Parameters
+        ----------
+        other : plot_manager
+            Variable to align with
+            
+        Returns
+        -------
+        tuple
+            (self_aligned, other_aligned, datetime_array)
+            Aligned numpy arrays and the common datetime array
+        """
+        from .data_cubby import data_cubby  # Moved import here to avoid circular import
+        from .print_manager import print_manager
+        from .data_classes.custom_variables import custom_variable
+        
+        # CRITICAL FIX: Check if variables have been corrupted and try to reload if possible
+        # This fixes the state corruption issue when plotbot loads data for a different timerange
+        
+        # Check self variable state
+        self_is_corrupt = False
+        if self is None or (hasattr(self, 'data') and self.data is None):
+            self_is_corrupt = True
+        elif not hasattr(self, 'datetime_array') or self.datetime_array is None:
+            self_is_corrupt = True
+        
+        # Check other variable state
+        other_is_corrupt = False
+        if other is None or (hasattr(other, 'data') and other.data is None):
+            other_is_corrupt = True
+        elif not hasattr(other, 'datetime_array') or other.datetime_array is None:
+            other_is_corrupt = True
+        
+        # Attempt to reload corrupted variables from data_cubby
+        if self_is_corrupt and hasattr(self, 'class_name') and hasattr(self, 'subclass_name'):
+            fresh_self = data_cubby.grab_component(self.class_name, self.subclass_name)
+            if fresh_self is not None and hasattr(fresh_self, 'datetime_array') and fresh_self.datetime_array is not None:
+                self = fresh_self
+                self_is_corrupt = False
+        
+        if other_is_corrupt and hasattr(other, 'class_name') and hasattr(other, 'subclass_name'):
+            fresh_other = data_cubby.grab_component(other.class_name, other.subclass_name)
+            if fresh_other is not None and hasattr(fresh_other, 'datetime_array') and fresh_other.datetime_array is not None:
+                other = fresh_other
+                other_is_corrupt = False
+        
+        # If either variable is still corrupt after reload attempts, return empty arrays with proper shape
+        if self_is_corrupt or other_is_corrupt:
+            print_manager.custom_debug(f"[MATH] One or both variables still corrupt after reload attempt")
+            empty_array = np.zeros(1)
+            return empty_array, empty_array, np.array([])
+        
+        # First check if variables have valid shapes before trying to access size/length
+        if not hasattr(self, 'shape') or not hasattr(other, 'shape'):
+            print_manager.custom_debug(f"[MATH] Cannot align variables - one or both variables have no shape attribute")
+            empty_array = np.zeros(1)
+            return empty_array, empty_array, np.array([])
+        
+        # Now check if they have any data to align
+        if self.size == 0 or other.size == 0:
+            print_manager.custom_debug(f"[MATH] Cannot align variables - one or both variables have no data yet")
+            empty_array = np.zeros(1)
+            return empty_array, empty_array, np.array([])
+        
+        # Check if datetime arrays are None or empty
+        no_datetime_self = not hasattr(self, 'datetime_array') or self.datetime_array is None or len(self.datetime_array) == 0
+        no_datetime_other = not hasattr(other, 'datetime_array') or other.datetime_array is None or len(other.datetime_array) == 0
+        
+        if no_datetime_self and no_datetime_other:
+            print_manager.custom_debug(f"[MATH] Both variables have no datetime arrays - cannot align")
+            empty_array = np.zeros(1)
+            return empty_array, empty_array, np.array([])
+        
+        # Check if interpolation is needed - use try/except to safely handle len() calls
+        try:
+            same_length = len(self) == len(other)
+        except (TypeError, AttributeError):
+            # If len() fails, assume they don't have the same length
+            print_manager.custom_debug(f"[MATH] Cannot determine lengths - assuming unequal")
+            same_length = False
+        
+        if same_length or no_datetime_self or no_datetime_other:
+            # No interpolation needed or possible
+            print_manager.custom_debug(f"[MATH] No interpolation needed or possible")
+            
+            # Use datetime array from either source
+            if hasattr(self, 'datetime_array') and self.datetime_array is not None and len(self.datetime_array) > 0:
+                dt_array = self.datetime_array
+            elif hasattr(other, 'datetime_array') and other.datetime_array is not None and len(other.datetime_array) > 0:
+                dt_array = other.datetime_array
+            else:
+                dt_array = None
+                
+            # Safely convert to array views
+            # 🐛 CRITICAL FIX: Use .data property to get clipped view when available
+            # Otherwise fall back to raw array (for variables without requested_trange set)
+            try:
+                # Prefer clipped data if available, otherwise use raw
+                if hasattr(self, '_clipped_data') and self._clipped_data is not None:
+                    self_view = self.data
+                else:
+                    self_view = self.view(np.ndarray)
+            except Exception as e:
+                self_view = np.zeros(1)
+                
+            try:
+                # Prefer clipped data if available, otherwise use raw
+                if hasattr(other, '_clipped_data') and other._clipped_data is not None:
+                    other_view = other.data
+                else:
+                    other_view = other.view(np.ndarray)
+            except Exception as e:
+                other_view = np.zeros(1)
+                
+            # One final safety check - ensure we're not returning None values
+            if self_view is None:
+                self_view = np.zeros(1)
+            if other_view is None:
+                other_view = np.zeros(1)
+                
+            return self_view, other_view, dt_array
+            
+        # Choose shorter time base to avoid extrapolation
+        # Use try/except for safety with datetime array length checks
+        try:
+            # Safety checks before length comparison
+            if not hasattr(self, 'datetime_array') or self.datetime_array is None or len(self.datetime_array) == 0:
+                print_manager.custom_debug(f"[MATH] First variable has no datetime array - using second variable's times")
+                target_times = other.datetime_array
+                self_aligned = np.zeros(len(target_times))  # Return zeros instead of None
+                other_aligned = other.data  # Use .data for time-clipped view
+            elif not hasattr(other, 'datetime_array') or other.datetime_array is None or len(other.datetime_array) == 0:
+                print_manager.custom_debug(f"[MATH] Second variable has no datetime array - using first variable's times")
+                target_times = self.datetime_array
+                self_aligned = self.data  # Use .data for time-clipped view
+                other_aligned = np.zeros(len(target_times))  # Return zeros instead of None
+            elif len(self.datetime_array) <= len(other.datetime_array):
+                print_manager.custom_debug(f"[MATH] Interpolating {getattr(other, 'subclass_name', 'var2')} to match {getattr(self, 'subclass_name', 'var1')}")
+                print_manager.custom_debug(f"[MATH DEBUG] self datetime_array: {len(self.datetime_array)} points")
+                print_manager.custom_debug(f"[MATH DEBUG] self.data: {len(self.data)} points")
+                print_manager.custom_debug(f"[MATH DEBUG] other datetime_array: {len(other.datetime_array)} points")
+                print_manager.custom_debug(f"[MATH DEBUG] other.data: {len(other.data)} points")
+                target_times = self.datetime_array
+                # Use .data property to get time-clipped view (not raw accumulated array)
+                other_aligned = self.interpolate_to_times(
+                    other.datetime_array, other.data, 
+                    target_times, method=plot_manager.interp_method
+                )
+                self_aligned = self.data
+            else:
+                print_manager.custom_debug(f"[MATH] Interpolating {getattr(self, 'subclass_name', 'var1')} to match {getattr(other, 'subclass_name', 'var2')}")
+                print_manager.custom_debug(f"[MATH DEBUG] self datetime_array: {len(self.datetime_array)} points")
+                print_manager.custom_debug(f"[MATH DEBUG] self.data: {len(self.data)} points")
+                print_manager.custom_debug(f"[MATH DEBUG] other datetime_array: {len(other.datetime_array)} points")
+                print_manager.custom_debug(f"[MATH DEBUG] other.data: {len(other.data)} points")
+                target_times = other.datetime_array
+                # Use .data property to get time-clipped view (not raw accumulated array)
+                self_aligned = self.interpolate_to_times(
+                    self.datetime_array, self.data, 
+                    target_times, method=plot_manager.interp_method
+                )
+                other_aligned = other.data
+            
+            # One final safety check - ensure we're not returning None values
+            if self_aligned is None:
+                self_aligned = np.zeros(len(target_times) if target_times is not None and len(target_times) > 0 else 1)
+            if other_aligned is None:
+                other_aligned = np.zeros(len(target_times) if target_times is not None and len(target_times) > 0 else 1)
+                
+            return self_aligned, other_aligned, target_times
+        except (TypeError, AttributeError) as e:
+            # If anything goes wrong during datetime array operations, return empty arrays
+            print_manager.custom_debug(f"[MATH] Error during interpolation - {str(e)}")
+            empty_array = np.zeros(1)
+            return empty_array, empty_array, np.array([])
+            
+    def _perform_operation(self, other, operation_name, operation_func, reverse_op=False):
+        """Helper method to perform arithmetic operations."""
+        from .print_manager import print_manager
+        from .data_classes.custom_variables import custom_variable
+        from .plot_config import plot_config
+        import numpy as np
+        
+        # Special handling for unary operations (where other is None)
+        if other is None:  # Unary operation like __neg__ or __abs__
+            print_manager.custom_debug(f"[MATH] Performing unary {operation_name}: {getattr(self, 'subclass_name', 'var1')}")
+            
+            # Track source variables
+            source_vars = []
+            if hasattr(self, 'source_var') and self.source_var is not None:
+                source_vars.extend(self.source_var)
+            elif hasattr(self, 'class_name') and hasattr(self, 'subclass_name'):
+                source_vars.append(self)
+            
+            try:
+                # Apply the unary operation to self's data
+                self_data = self.view(np.ndarray)
+                # The lambda in the method call handles applying just to first arg
+                result = operation_func(self_data, None)
+                
+                # Create variable name
+                var_name = f"{operation_name}_{getattr(self, 'subclass_name', 'var1')}"
+                
+                # Create result plot_manager
+                # 🐛 BUG FIX: COPY datetime_array instead of sharing reference!
+                datetime_arr_copy = self.datetime_array.copy() if hasattr(self, 'datetime_array') and self.datetime_array is not None else None
+                result_plot_config = plot_config(
+                    data_type="custom_data_type",
+                    class_name="custom_variables", 
+                    subclass_name=var_name,
+                    plot_type="time_series",
+                    datetime_array=datetime_arr_copy
+                )
+                
+                # Create the result
+                result_var = plot_manager(result, plot_config=result_plot_config)
+                
+                # Set metadata
+                object.__setattr__(result_var, 'operation', operation_name)
+                object.__setattr__(result_var, 'source_var', source_vars)
+                
+                # Return the result directly (don't auto-wrap)
+                return result_var
+            
+            except Exception as e:
+                print_manager.custom_debug(f"[MATH] Error during unary {operation_name}: {str(e)}")
+                # For unary ops, return self on error as fallback
+                return self
+        
+        # Rest of the existing method for binary operations...
+        print_manager.custom_debug(f"[MATH] Performing {operation_name}: {getattr(self, 'subclass_name', 'var1')} vs {getattr(other, 'subclass_name', str(other))}")
+        
+        source_vars = []
+        scalar_value = None
+        dt_array = None
+        
+        # Initial source tracking for 'self'
+        if hasattr(self, 'source_var') and self.source_var is not None:
+            source_vars.extend(self.source_var)
+        elif hasattr(self, 'class_name') and hasattr(self, 'subclass_name'):
+            source_vars.append(self)
+        
+        if isinstance(other, plot_manager):
+            # --- Plot Manager vs Plot Manager ---
+            # Also track other variable's sources if available
+            if hasattr(other, 'source_var') and other.source_var is not None:
+                source_vars.extend(other.source_var)
+            elif hasattr(other, 'class_name') and hasattr(other, 'subclass_name'):
+                source_vars.append(other)
+            
+            # ✨ NEW BEHAVIOR: Let variables auto-update to current trange
+            # With lazy clipping, stale data is automatically refreshed on access
+            # Math operations now work on current trange data consistently
+            print_manager.custom_debug(f"[MATH] Using current trange for math operations (lazy auto-clipping)")
+
+            self_aligned, other_aligned, dt_array = self.align_variables(other)
+
+            # Safety check after alignment
+            if self_aligned is None or other_aligned is None:
+                print_manager.warning(f"Cannot perform {operation_name}: Alignment failed.")
+                result = np.zeros(1)
+                var_name = f"{getattr(self, 'subclass_name', 'var1')}_{getattr(other, 'subclass_name', 'var2')}_{operation_name}_failed"
+                # Early return for failure case, maybe wrapped? Or handle below?
+                # For simplicity, let's create a placeholder result below.
+            else:
+                try:
+                    # Safety check for empty arrays
+                    if len(self_aligned) == 0 or len(other_aligned) == 0:
+                        print_manager.warning(f"Cannot perform {operation_name}: Empty array after alignment.")
+                        result = np.zeros(1) # Or maybe shape of dt_array if available?
+                    else:
+                        # Perform the actual operation
+                        if reverse_op: # Handle things like scalar / variable
+                            result = operation_func(other_aligned, self_aligned)
+                        else:
+                            result = operation_func(self_aligned, other_aligned)
+
+                    # STATUS PRINT (Optional - Add back if needed)
+                    # print_manager.variable_basic(f"📊 Operation complete: {self.class_name}.{self.subclass_name} {op_symbol} {other.class_name}.{other.subclass_name}")
+                    # print_manager.variable_basic(f"   → Interpolation may have occurred.")
+
+                except Exception as e:
+                    print_manager.custom_debug(f"[MATH] Error during {operation_name}: {str(e)}")
+                    result = np.zeros(1) # Fallback result on error
+
+            # Create variable name
+            var_name = f"{getattr(self, 'subclass_name', 'var1')}_{getattr(other, 'subclass_name', 'var2')}_{operation_name}"
+
+        else:
+            # --- Plot Manager vs Scalar ---
+            scalar_value = other
+            
+            # Add self to source vars if not already tracked (e.g. if self was already a derived var)
+            if not any(sv is self for sv in source_vars):
+                if hasattr(self, 'class_name') and hasattr(self, 'subclass_name'):
+                    source_vars.append(self)
+
+            try:
+                self_data = self.view(np.ndarray)
+                # Perform the actual operation
+                if reverse_op: # Handle things like scalar / variable
+                    # Special handling for division by zero if needed
+                    if operation_name == 'div' or operation_name == 'floordiv':
+                        safe_self_data = np.where(self_data == 0, np.nan, self_data)
+                        result = operation_func(scalar_value, safe_self_data)
+                    else:
+                        result = operation_func(scalar_value, self_data)
+                else:
+                    # Special handling for division by zero if needed
+                    if (operation_name == 'div' or operation_name == 'floordiv') and scalar_value == 0:
+                        result = np.full_like(self_data, np.nan)
+                    else:
+                        result = operation_func(self_data, scalar_value)
+
+                # STATUS PRINT (Optional - Add back if needed)
+                # print_manager.variable_basic(f"📊 Operation complete: {self.class_name}.{self.subclass_name} {op_symbol} {scalar_value}")
+                # print_manager.variable_basic(f"   → No interpolation needed for scalar operation.")
+
+            except Exception as e:
+                print_manager.custom_debug(f"[MATH] Error during scalar {operation_name}: {str(e)}")
+                result = np.zeros(1) # Fallback result on error
+
+            # Create variable name
+            var_name = f"{getattr(self, 'subclass_name', 'var1')}_scalar_{operation_name}"
+            if reverse_op:
+                var_name = f"scalar_{scalar_value}_{operation_name}_{getattr(self, 'subclass_name', 'var1')}"
+
+        # --- Create result plot_manager ---
+        # Use placeholder options initially, custom_variable will refine
+        # 🐛 BUG FIX: COPY datetime_array AND time instead of sharing reference!
+        result_datetime_array = None
+        if dt_array is not None:
+            result_datetime_array = dt_array.copy()
+        elif hasattr(self, 'datetime_array') and self.datetime_array is not None:
+            result_datetime_array = self.datetime_array.copy()
+        
+        # 🐛 BUG FIX: Also copy .time property (TT2000 epoch times)
+        result_time = None
+        if hasattr(self, 'plot_config') and hasattr(self.plot_config, 'time') and self.plot_config.time is not None:
+            result_time = self.plot_config.time.copy() if hasattr(self.plot_config.time, 'copy') else self.plot_config.time
+        elif isinstance(other, plot_manager) and hasattr(other, 'plot_config') and hasattr(other.plot_config, 'time') and other.plot_config.time is not None:
+            result_time = other.plot_config.time.copy() if hasattr(other.plot_config.time, 'copy') else other.plot_config.time
+        
+        result_plot_config = plot_config(
+            data_type="custom_data_type", # Let custom_variable set to custom_data_type
+            class_name="custom_variables", # Let custom_variable set to custom_variables
+            subclass_name=var_name, # Temporary, custom_variable uses this
+            plot_type="time_series",
+            datetime_array=result_datetime_array,
+            time=result_time
+        )
+        
+        # Create the result using plot_manager constructor
+        # 🐛 CRITICAL: Force a COPY to avoid view/reference issues with parent arrays
+        result_copy = np.array(result, copy=True)
+        print_manager.custom_debug(f"[MATH] Creating result plot_manager:")
+        print_manager.custom_debug(f"[MATH]   result shape: {result.shape if hasattr(result, 'shape') else len(result)}")
+        print_manager.custom_debug(f"[MATH]   result_copy shape: {result_copy.shape}")
+        print_manager.custom_debug(f"[MATH]   result_datetime_array: {len(result_datetime_array) if result_datetime_array is not None else 0}")
+        result_var = plot_manager(result_copy, plot_config=result_plot_config)
+        print_manager.custom_debug(f"[MATH]   result_var raw data: {len(result_var.view(np.ndarray))}")
+
+        # --- Set metadata on the result object ---
+        # Explicitly using object.__setattr__ might be safer here
+        object.__setattr__(result_var, 'operation', operation_name)
+        object.__setattr__(result_var, 'source_var', source_vars) # Set the tracked sources
+        if scalar_value is not None:
+            object.__setattr__(result_var, 'scalar_value', scalar_value)
+        
+        # 🐛 CRITICAL FIX: Copy requested_trange from source to result
+        # This ensures .data property returns correctly clipped view!
+        if hasattr(self, '_requested_trange') and self._requested_trange is not None:
+            print_manager.custom_debug(f"[MATH] Copying requested_trange from self to result: {self._requested_trange}")
+            print_manager.custom_debug(f"[MATH]   self raw data: {len(self.view(np.ndarray))} points")
+            print_manager.custom_debug(f"[MATH]   self datetime_array: {len(self.datetime_array) if hasattr(self, 'datetime_array') and self.datetime_array is not None else 0} points")
+            result_var.requested_trange = self._requested_trange
+        elif isinstance(other, plot_manager) and hasattr(other, '_requested_trange') and other._requested_trange is not None:
+            print_manager.custom_debug(f"[MATH] Copying requested_trange from other to result: {other._requested_trange}")
+            print_manager.custom_debug(f"[MATH]   other raw data: {len(other.view(np.ndarray))} points")
+            print_manager.custom_debug(f"[MATH]   other datetime_array: {len(other.datetime_array) if hasattr(other, 'datetime_array') and other.datetime_array is not None else 0} points")
+            result_var.requested_trange = other._requested_trange
+
+        # --- Return the result directly ---
+        # Don't auto-wrap in custom_variable - let the user explicitly create custom variables
+        # This avoids stale reference issues and gives users full control
+        return result_var
+
+    def __add__(self, other):
+        """Add two variables or a variable and a scalar."""
+        import numpy as np
+        return self._perform_operation(other, 'add', np.add)
+
+    def __sub__(self, other):
+        """Subtract two variables or a variable and a scalar."""
+        import numpy as np
+        return self._perform_operation(other, 'sub', np.subtract)
+
+    def __radd__(self, other):
+        """Handle right-sided addition (other + self)."""
+        import numpy as np
+        return self._perform_operation(other, 'add', np.add, reverse_op=True)
+
+    def __rsub__(self, other):
+        """Handle right-sided subtraction (other - self)."""
+        import numpy as np
+        return self._perform_operation(other, 'sub', np.subtract, reverse_op=True)
+
+    def __mul__(self, other):
+        """Multiply two variables or a variable and a scalar."""
+        import numpy as np
+        return self._perform_operation(other, 'mul', np.multiply)
+
+    def __rmul__(self, other):
+        """Support right multiplication (e.g., 5 * variable)."""
+        import numpy as np
+        return self._perform_operation(other, 'mul', np.multiply, reverse_op=True)
+
+    def __truediv__(self, other):
+        """Divide two variables or a variable and a scalar."""
+        import numpy as np
+        # Helper needs to handle division by zero for scalar case
+        return self._perform_operation(other, 'div', np.true_divide)
+    
+    def __rtruediv__(self, other):
+        """Handle right-sided division (other / self)."""
+        import numpy as np
+        return self._perform_operation(other, 'div', np.true_divide, reverse_op=True)
+
+    def __pow__(self, other):
+        """Support exponentiation (e.g., variable ** 2)."""
+        import numpy as np
+        return self._perform_operation(other, 'pow', np.power)
+        
+    def __rpow__(self, other):
+        """Handle right-sided power (other ** self)."""
+        import numpy as np
+        return self._perform_operation(other, 'pow', np.power, reverse_op=True)
+
+    def __floordiv__(self, other):
+        """Handle floor division with automatic recalculation capability."""
+        import numpy as np
+        return self._perform_operation(other, 'floordiv', np.floor_divide)
+
+    def __rfloordiv__(self, other):
+        """Handle right-sided floor division (other // self)."""
+        import numpy as np
+        return self._perform_operation(other, 'floordiv', np.floor_divide, reverse_op=True)
+
+    def __neg__(self):
+        """Handle negation with automatic recalculation capability."""
+        import numpy as np
+        # For unary operations, we can pass None as 'other', only perform op on self
+        # The operation func needs to handle just the data, not two arguments
+        return self._perform_operation(None, 'neg', lambda x, _: np.negative(x))
+
+    def __abs__(self):
+        """Handle absolute value with automatic recalculation capability."""
+        import numpy as np
+        # For unary operations, we can pass None as 'other', only perform op on self
+        # The operation func needs to handle just the data, not two arguments
+        return self._perform_operation(None, 'abs', lambda x, _: np.abs(x))
+    
+    def _check_default_value(self, name):
+        """Check if a default value exists for a given attribute."""
+        try:
+            default_value = self._default_values.get(name, None)
+            if default_value is None:
+                print_manager.warning(f"No default value found for {name}")
+            return default_value
+        except Exception as e:
+            return None
+
+print('initialized plot_manager')
