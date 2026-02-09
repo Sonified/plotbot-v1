@@ -273,6 +273,8 @@ class _LazyAudifier:
     """Proxy that loads audifier on first access."""
     def __getattr__(self, name):
         return getattr(_get_audifier(), name)
+    def __setattr__(self, name, value):
+        setattr(_get_audifier(), name, value)
     def __call__(self, *args, **kwargs):
         return _get_audifier()(*args, **kwargs)
     def __dir__(self):
@@ -472,10 +474,10 @@ RESET = '\033[0m'
 # Version, Date, and Welcome Message for Plotbot
 #------------------------------------------------------------------------------
 
-__version__ = "2026_02_05_v1.00"
+__version__ = "2026_02_09_v1.01"
 
 # Commit message for this version
-__commit_message__ = "v1.00 Feature: First public release of Plotbot"
+__commit_message__ = "v1.01 Bugfix: Apply audifier fixes from v3.81"
 
 # Print the version and commit message
 print(f"""
