@@ -474,10 +474,10 @@ RESET = '\033[0m'
 # Version, Date, and Welcome Message for Plotbot
 #------------------------------------------------------------------------------
 
-__version__ = "2026_02_09_v1.01"
+__version__ = "2026_02_23_v1.02"
 
 # Commit message for this version
-__commit_message__ = "v1.01 Bugfix: Apply audifier fixes from v3.81"
+__commit_message__ = "v1.02 Bugfix: Custom variables now auto-load dependencies in notebooks"
 
 # Print the version and commit message
 print(f"""
