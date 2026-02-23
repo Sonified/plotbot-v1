@@ -165,7 +165,7 @@ class epad_strahl_class:
         # Convert numpy.datetime64 to datetime before using strftime
         date_str = pd.Timestamp(self.datetime_array[0]).strftime('%Y-%m-%d')
         encounter_number = get_encounter_number(date_str)
-        if encounter_number in ['E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8', 'E9']:
+        if encounter_number in ['E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8', 'E9', 'E26']:
             self.energy_index = 8
         else:
             self.energy_index = 12
@@ -175,7 +175,7 @@ class epad_strahl_class:
 
         # Extract strahl flux for specific energy
         strahl = eflux[:, :, self.energy_index]
-        
+
         # Replace zeros and calculate log version
         strahl = np.where(strahl == 0, 1e-10, strahl)  # Replace zeros
         log_strahl = np.log10(strahl)
@@ -486,17 +486,17 @@ class epad_strahl_high_res_class:
         # Convert numpy.datetime64 to datetime before using strftime
         date_str = pd.Timestamp(self.datetime_array[0]).strftime('%Y-%m-%d')
         encounter_number = get_encounter_number(date_str)
-        if encounter_number in ['E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8', 'E9']:
+        if encounter_number in ['E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8', 'E9', 'E26']:
             self.energy_index = 8
         else:
             self.energy_index = 12
 
         print_manager.debug(f"Encounter number: {encounter_number}")
         print_manager.debug(f"Energy index: {self.energy_index}")
-        
+
         # Extract strahl flux for specific energy
         strahl = eflux[:, :, self.energy_index]
-        
+
         # Calculate log version
         log_strahl = np.log10(strahl)
         strahl = log_strahl
