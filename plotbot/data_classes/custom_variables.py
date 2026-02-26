@@ -735,9 +735,9 @@ class CustomVariablesContainer:
         object.__setattr__(result, 'subclass_name', name)
         object.__setattr__(result, 'data_type', 'custom_data_type')
         
-        # Preserve the subclass_name-based labels
-        object.__setattr__(result, 'y_label', name)
-        object.__setattr__(result, 'legend_label', name)
+        # Preserve the subclass_name-based labels (use setattr for property routing)
+        setattr(result, 'y_label', name)
+        setattr(result, 'legend_label', name)
         
         # 🎯 CRITICAL: Set requested_trange for proper time clipping (non-lambda path)
         # This ensures .data property clips to the requested time range
@@ -808,10 +808,14 @@ class CustomVariablesContainer:
             print_manager.custom_debug(f"Note: Could not check global namespace for styles: {str(e)}")
         
         # Apply all found styles to the result
+        # IMPORTANT: Use setattr() (not object.__setattr__) so property setters
+        # on plot_manager are triggered. Properties like y_limit, y_scale, color, etc.
+        # store their values via plot_config, and object.__setattr__ bypasses that,
+        # making the values invisible to property getters.
         for attr, value in original_styles.items():
             try:
                 print_manager.custom_debug(f"Preserving style attribute {attr}={value}")
-                object.__setattr__(result, attr, value)
+                setattr(result, attr, value)
             except Exception as e:
                 print_manager.custom_debug(f"Could not preserve style {attr}: {str(e)}")
         
@@ -1020,14 +1024,18 @@ class CustomVariablesContainer:
                         print_manager.custom_debug(f"🔧 [EVALUATE] Created new plot_manager with {len(result.datetime_array)} points")
                 
                 # Preserve user-defined attributes from old variable
+                # Use setattr() (not object.__setattr__) so property setters route
+                # values to plot_config where property getters can find them
                 old_var = self.variables[name]
-                style_attrs = ['color', 'y_label', 'legend_label', 'plot_type', 'y_scale', 
-                              'line_style', 'marker_size', 'marker_style', 'line_width']
+                style_attrs = ['color', 'y_label', 'legend_label', 'plot_type', 'y_scale', 'y_limit',
+                              'line_style', 'marker_size', 'marker_style', 'line_width',
+                              'alpha', 'colormap', 'colorbar_scale', 'colorbar_limits']
                 for attr in style_attrs:
                     if hasattr(old_var, attr):
                         old_value = getattr(old_var, attr)
-                        object.__setattr__(result, attr, old_value)
-                
+                        if old_value is not None:
+                            setattr(result, attr, old_value)
+
                 # STEP 9: Data Cubby Storage
                 print_manager.custom_debug(f"🔍 [STEP 9] Storing result in container.variables...")
                 self.variables[name] = result

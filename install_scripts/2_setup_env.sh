@@ -44,8 +44,8 @@ if [[ "$CONDA_PATH" != *"conda"* ]]; then
 fi
 
 # Check if environment already exists
-if conda env list | grep -q plotbot_anaconda; then
-    echo "🔹 The 'plotbot_anaconda' environment already exists."
+if conda env list | grep -q plotbot_v1_anaconda; then
+    echo "🔹 The 'plotbot_v1_anaconda' environment already exists."
     echo ""
     echo "Choose an option:"
     echo "  1) Update existing environment with any new dependencies (keeps current setup)"
@@ -57,11 +57,11 @@ if conda env list | grep -q plotbot_anaconda; then
     
     case $option in
         1)
-            echo "🔹 Updating 'plotbot_anaconda' environment..."
-            echo "Running: conda env update -f environment.yml --name plotbot_anaconda -v"
+            echo "🔹 Updating 'plotbot_v1_anaconda' environment..."
+            echo "Running: conda env update -f environment.yml --name plotbot_v1_anaconda -v"
             
             # Run the command and let it print directly to terminal
-            conda env update -f environment.yml --name plotbot_anaconda -v
+            conda env update -f environment.yml --name plotbot_v1_anaconda -v
             update_status=$? # Capture exit status immediately
             
             # Check if the update was successful
@@ -74,16 +74,16 @@ if conda env list | grep -q plotbot_anaconda; then
             fi
             ;;
         2)
-            echo "🔹 Removing the existing 'plotbot_anaconda' environment..."
-            echo "Running: conda remove -n plotbot_anaconda --all -y"
-            conda remove -n plotbot_anaconda --all -y
+            echo "🔹 Removing the existing 'plotbot_v1_anaconda' environment..."
+            echo "Running: conda remove -n plotbot_v1_anaconda --all -y"
+            conda remove -n plotbot_v1_anaconda --all -y
             remove_status=$?
             if [ $remove_status -ne 0 ]; then
                 echo "❌ Error: Environment removal failed with code $remove_status."
                 exit 1
             else
                 echo "✅ Environment removed successfully!"
-                echo "🔹 Creating a new 'plotbot_anaconda' environment..."
+                echo "🔹 Creating a new 'plotbot_v1_anaconda' environment..."
                 echo "Running: conda env create -f environment.yml"
                 conda env create -f environment.yml
                 create_status=$?
@@ -116,7 +116,7 @@ if conda env list | grep -q plotbot_anaconda; then
     esac
     break  # Exit the loop after any valid choice
 else
-    echo "🔹 Creating 'plotbot_anaconda' environment..."
+    echo "🔹 Creating 'plotbot_v1_anaconda' environment..."
     echo "Running: conda env create -f environment.yml"
     conda env create -f environment.yml
     create_status=$?

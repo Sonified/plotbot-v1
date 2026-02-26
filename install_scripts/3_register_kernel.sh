@@ -6,8 +6,8 @@ echo "🚀 Setting up Plotbot in Jupyter..."
 source "$(conda info --base)/etc/profile.d/conda.sh"
 
 # Activate the environment
-conda activate plotbot_anaconda || { 
-    echo "❌ Failed to activate plotbot_anaconda. Please verify it exists with 'conda env list'"; 
+conda activate plotbot_v1_anaconda || { 
+    echo "❌ Failed to activate plotbot_v1_anaconda. Please verify it exists with 'conda env list'"; 
     exit 1; 
 }
 
@@ -18,13 +18,13 @@ echo "✓ Using Python: $(which python)"
 pip install ipykernel --quiet
 
 # Remove any existing kernel with the same name
-jupyter kernelspec uninstall -f plotbot_anaconda 2>/dev/null || true
+jupyter kernelspec uninstall -f plotbot_v1_anaconda 2>/dev/null || true
 
 # Register the kernel
-python -m ipykernel install --user --name=plotbot_anaconda --display-name="Python (Plotbot)"
+python -m ipykernel install --user --name=plotbot_v1_anaconda --display-name="Plotbot v1 (Anaconda)"
 
 # Verify the kernel was correctly installed
-if jupyter kernelspec list | grep -q plotbot_anaconda; then
+if jupyter kernelspec list | grep -q plotbot_v1_anaconda; then
     echo "✅ Success! Plotbot is now registered with Jupyter!"
 else
     echo "❌ Something went wrong with the Plotbot registration."

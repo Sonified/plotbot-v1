@@ -67,8 +67,8 @@ fi
 
 echo ""
 echo "🔹 Step 3/4: Installing Plotbot as Development Package..."
-echo "Running: conda run -n plotbot_anaconda pip install -e ."
-conda run -n plotbot_anaconda pip install -e .
+echo "Running: conda run -n plotbot_v1_anaconda pip install -e ."
+conda run -n plotbot_v1_anaconda pip install -e .
 install_status=$?
 if [ $install_status -ne 0 ]; then
     echo "❌ Error: Plotbot package installation failed with code $install_status."
@@ -88,11 +88,11 @@ fi
 echo ""
 echo "🔧 Setting up IDE configuration..."
 source ./install_scripts/setup_ide.sh
-setup_ide_config "/opt/anaconda3/envs/plotbot_anaconda/bin/python3" "plotbot_anaconda"
+setup_ide_config "/opt/anaconda3/envs/plotbot_v1_anaconda/bin/python3" "plotbot_v1_anaconda"
 
 echo ""
 echo "🔧 Setting up auto-activation..."
-echo 'conda activate plotbot_anaconda 2>/dev/null || true' >> ~/.zshrc
+echo 'conda activate plotbot_v1_anaconda 2>/dev/null || true' >> ~/.zshrc
 echo "✅ Auto-activation configured!"
 
 echo ""
@@ -105,7 +105,7 @@ echo "⭐ Next steps:"
 echo "1. Restart your terminal: exec zsh"
 echo "2. Open VS Code/Cursor"
 echo "3. Open example_notebooks/Plotbot.ipynb"
-echo "4. Select 'Python (Plotbot)' as your kernel"
+echo "4. Select 'Plotbot v1 (Anaconda)' as your kernel"
 echo "5. Run the first cell to confirm setup"
 echo "6. Explore one of the example plotbot jupyter notebooks to test the setup"
 echo ""

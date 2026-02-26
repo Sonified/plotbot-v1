@@ -3,54 +3,84 @@
 echo "🔹 Registering Plotbot as Jupyter kernel (Micromamba)..."
 echo ""
 
-# Set up micromamba environment variables using Homebrew's location
-export MAMBA_EXE="$(brew --prefix micromamba)/bin/micromamba"
+# Smart micromamba detection: find it wherever it lives
 export MAMBA_ROOT_PREFIX="$HOME/micromamba"
+export MAMBA_EXE=""
 
-# Add homebrew to PATH if not already there
-export PATH="$HOME/homebrew/bin:$PATH"
+# Method 1: Check if micromamba is already in PATH
+if command -v micromamba &> /dev/null; then
+    MAMBA_EXE="$(command -v micromamba)"
+fi
+
+# Method 2: Ask brew (try system brew first, then user brew)
+if [ -z "$MAMBA_EXE" ] || [ ! -f "$MAMBA_EXE" ]; then
+    for BREW_CMD in "brew" "/opt/homebrew/bin/brew" "/usr/local/bin/brew" "$HOME/homebrew/bin/brew"; do
+        if command -v "$BREW_CMD" &> /dev/null || [ -f "$BREW_CMD" ]; then
+            CANDIDATE="$($BREW_CMD --prefix micromamba 2>/dev/null)/bin/micromamba"
+            if [ -f "$CANDIDATE" ] && [ -x "$CANDIDATE" ]; then
+                MAMBA_EXE="$CANDIDATE"
+                break
+            fi
+        fi
+    done
+fi
+
+# Method 3: Check common locations directly
+if [ -z "$MAMBA_EXE" ] || [ ! -f "$MAMBA_EXE" ]; then
+    for CANDIDATE in \
+        "/opt/homebrew/bin/micromamba" \
+        "/opt/homebrew/opt/micromamba/bin/micromamba" \
+        "/usr/local/bin/micromamba" \
+        "$HOME/homebrew/bin/micromamba" \
+        "$HOME/homebrew/opt/micromamba/bin/micromamba"; do
+        if [ -f "$CANDIDATE" ] && [ -x "$CANDIDATE" ]; then
+            MAMBA_EXE="$CANDIDATE"
+            break
+        fi
+    done
+fi
+
+if [ -z "$MAMBA_EXE" ] || [ ! -f "$MAMBA_EXE" ]; then
+    echo "❌ Error: micromamba command not found."
+    echo "   Please ensure micromamba is installed and your terminal is restarted."
+    exit 1
+fi
+
+export MAMBA_EXE
+echo "✅ Found micromamba at: $MAMBA_EXE"
 
 # Initialize micromamba shell hook for bash
 __mamba_setup="$("$MAMBA_EXE" shell hook --shell bash --root-prefix "$MAMBA_ROOT_PREFIX" 2> /dev/null)"
 if [ $? -eq 0 ]; then
     eval "$__mamba_setup"
 else
-    # Enhanced fallback - create a function that mimics micromamba behavior
     micromamba() {
         "$MAMBA_EXE" "$@"
     }
     export -f micromamba
 fi
 
-# Ensure micromamba is available - try direct path if command fails
+# Ensure micromamba is available as a command
 if ! command -v micromamba &> /dev/null; then
-    # Try using the direct path
-    if [ -f "$MAMBA_EXE" ]; then
-        echo "⚠️  Using direct path to micromamba: $MAMBA_EXE"
-        micromamba() {
-            "$MAMBA_EXE" "$@"
-        }
-        export -f micromamba
-    else
-        echo "❌ Error: micromamba command not found."
-        echo "   Please ensure micromamba is installed and your terminal is restarted."
-        exit 1
-    fi
+    micromamba() {
+        "$MAMBA_EXE" "$@"
+    }
+    export -f micromamba
 fi
 
-# Check if plotbot_micromamba exists
-if ! micromamba env list | grep -q "plotbot_micromamba"; then
-    echo "❌ Error: plotbot_micromamba environment not found."
+# Check if plotbot_v1_micromamba exists
+if ! micromamba env list | grep -q "plotbot_v1_micromamba"; then
+    echo "❌ Error: plotbot_v1_micromamba environment not found."
     echo "   Please run 3_setup_env_micromamba.sh first."
     exit 1
 fi
 
-echo "✅ Found plotbot_micromamba environment"
+echo "✅ Found plotbot_v1_micromamba environment"
 echo ""
 
 # Activate the environment and install ipykernel
-echo "🔹 Installing ipykernel in plotbot_micromamba..."
-micromamba run -n plotbot_micromamba python -m pip install ipykernel
+echo "🔹 Installing ipykernel in plotbot_v1_micromamba..."
+micromamba run -n plotbot_v1_micromamba python -m pip install ipykernel
 
 if [ $? -ne 0 ]; then
     echo "❌ Error: Failed to install ipykernel."
@@ -62,7 +92,7 @@ echo ""
 
 # Register the Jupyter kernel
 echo "🔹 Registering Jupyter kernel..."
-micromamba run -n plotbot_micromamba python -m ipykernel install --user --name plotbot_micromamba --display-name "Plotbot (Micromamba)"
+micromamba run -n plotbot_v1_micromamba python -m ipykernel install --user --name plotbot_v1_micromamba --display-name "Plotbot v1 (Micromamba)"
 
 if [ $? -ne 0 ]; then
     echo "❌ Error: Failed to register Jupyter kernel."
@@ -74,8 +104,8 @@ echo ""
 
 # Verify kernel registration
 echo "🔍 Verifying kernel registration..."
-if micromamba run -n plotbot_micromamba jupyter kernelspec list | grep -q "plotbot_micromamba"; then
-    echo "✅ plotbot_micromamba kernel is registered and available"
+if micromamba run -n plotbot_v1_micromamba jupyter kernelspec list | grep -q "plotbot_v1_micromamba"; then
+    echo "✅ plotbot_v1_micromamba kernel is registered and available"
 else
     echo "⚠️  Kernel may be registered but not showing in current environment"
     echo "   This is often normal - try checking in Jupyter/VS Code"
@@ -84,11 +114,11 @@ fi
 # Test Python version and key packages
 echo ""
 echo "🔍 Environment verification:"
-echo "   Python version: $(micromamba run -n plotbot_micromamba python --version)"
+echo "   Python version: $(micromamba run -n plotbot_v1_micromamba python --version)"
 
 # Test import of key packages
 echo "   Testing key package imports..."
-micromamba run -n plotbot_micromamba python -c "
+micromamba run -n plotbot_v1_micromamba python -c "
 import sys
 packages = ['numpy', 'matplotlib', 'pandas', 'scipy']
 failed = []

@@ -1,4 +1,4 @@
-name: plotbot_anaconda
+name: plotbot_v1_anaconda
 channels:
   - conda-forge
   - defaults

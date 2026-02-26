@@ -3,33 +3,44 @@
 echo "🔹 Initializing Micromamba (No-Sudo Installation)..."
 echo ""
 
-# Set Homebrew prefix in user directory
-export HOMEBREW_PREFIX="$HOME/homebrew"
-
-# Check if Homebrew is already installed
-if [ -f "$HOMEBREW_PREFIX/bin/brew" ]; then
-    echo "✅ Homebrew already installed at $HOMEBREW_PREFIX"
+# Smart Homebrew detection: check for existing system Homebrew first
+# Standard locations: /opt/homebrew (Apple Silicon), /usr/local (Intel), ~/homebrew (no-sudo)
+if command -v brew &> /dev/null; then
+    # Homebrew already exists on this system — use it
+    export HOMEBREW_PREFIX="$(brew --prefix)"
+    echo "✅ Homebrew already installed at $HOMEBREW_PREFIX (using existing installation)"
+elif [ -f "/opt/homebrew/bin/brew" ]; then
+    export HOMEBREW_PREFIX="/opt/homebrew"
+    echo "✅ Homebrew found at $HOMEBREW_PREFIX"
+elif [ -f "/usr/local/bin/brew" ]; then
+    export HOMEBREW_PREFIX="/usr/local"
+    echo "✅ Homebrew found at $HOMEBREW_PREFIX"
+elif [ -f "$HOME/homebrew/bin/brew" ]; then
+    export HOMEBREW_PREFIX="$HOME/homebrew"
+    echo "✅ Homebrew found at $HOMEBREW_PREFIX"
 else
-    echo "📦 Installing Homebrew in user directory (no sudo required)..."
-    
+    # No Homebrew found anywhere — install in user directory (no sudo required)
+    export HOMEBREW_PREFIX="$HOME/homebrew"
+    echo "📦 No existing Homebrew found. Installing in user directory (no sudo required)..."
+
     # Create directories
     mkdir -p "$HOMEBREW_PREFIX"
-    
+
     # Clone Homebrew
     echo "   Cloning Homebrew repository..."
     GIT_SSL_NO_VERIFY=true \
     git clone https://github.com/Homebrew/brew "$HOMEBREW_PREFIX/Homebrew"
-    
+
     if [ $? -ne 0 ]; then
         echo "❌ Error: Failed to clone Homebrew repository."
         exit 1
     fi
-    
+
     # Set up symlinks
     mkdir -p "$HOMEBREW_PREFIX/bin"
     ln -s "$HOMEBREW_PREFIX/Homebrew/bin/brew" "$HOMEBREW_PREFIX/bin/brew"
-    
-    echo "✅ Homebrew installed successfully"
+
+    echo "✅ Homebrew installed successfully at $HOMEBREW_PREFIX"
 fi
 
 # Update PATH for current session
@@ -100,7 +111,7 @@ if ! command -v brew &> /dev/null; then
     exit 1
 fi
 
-echo "✅ Homebrew version: $(brew --version | head -n1)"
+echo "✅ Homebrew version: $(brew --version 2>/dev/null | head -n1)"
 
 # Install micromamba if not already installed
 if ! command -v micromamba &> /dev/null; then
@@ -194,7 +205,7 @@ if [ ! -d "$MICROMAMBA_ROOT_PREFIX" ]; then
     fi
     
     # Initialize micromamba for the shell
-    "$MICROMAMBA_PATH" shell init --shell $SHELL_TYPE --root-prefix "$MICROMAMBA_ROOT_PREFIX"
+    "$MICROMAMBA_PATH" shell init --shell $SHELL_TYPE --root-prefix "$MICROMAMBA_ROOT_PREFIX" 2>/dev/null
     
     if [ $? -ne 0 ]; then
         echo "❌ Error: Failed to initialize micromamba."
@@ -212,7 +223,7 @@ source "$PROFILE_FILE"
 
 # Verify micromamba installation
 if command -v micromamba &> /dev/null; then
-    echo "✅ Micromamba version: $(micromamba --version)"
+    echo "✅ Micromamba version: $(micromamba --version 2>/dev/null)"
 else
     echo "⚠️  Micromamba initialized but not yet available in PATH."
     echo "   You may need to restart your terminal."

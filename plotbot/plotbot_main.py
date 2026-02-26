@@ -84,7 +84,6 @@ from .plotbot_helpers import time_clip, parse_axis_spec, resample, debug_plot_va
 @timer_decorator("TIMER_PLOTBOT_ENTRY")
 def plotbot(trange, *args):
     """Plot multiple time series with shared x-axis and optional right y-axes."""
-    
     # DEBUG: Show what args were passed
     print_manager.custom_debug(f"\n🔍 [PLOTBOT_ENTRY] plotbot() called with {len(args)} arguments:")
     for i in range(0, min(len(args), 20), 2):  # Show first 10 var/axis pairs
@@ -282,7 +281,8 @@ def plotbot(trange, *args):
             'class_name': var.class_name,
             'subclass_name': var.subclass_name,
             'axis_spec': axis_spec,
-            'original_var_id': id(var)  # Track original ID
+            'original_var_id': id(var),  # Track original ID
+            'original_var_ref': var  # Keep reference for style attributes (y_limit, color, etc.)
         })
         
         # Also capture unique identity for later use
@@ -382,7 +382,23 @@ def plotbot(trange, *args):
         
         var = class_instance.get_subclass(request['subclass_name']) # Get specific component to plot
         print_manager.custom_debug(f"🔍 [PLOTBOT_PLOT_PREP] Retrieved variable: {request['class_name']}.{request['subclass_name']} (ID:{id(var)}), data_type: {getattr(var, 'data_type', 'unknown')}")
-        
+
+        # Copy style attributes from the user's original variable reference.
+        # This handles the case where the user set attributes (e.g. my_var.y_limit = [0, 3000])
+        # on their local reference AFTER a previous plotbot() call replaced the container's copy.
+        original_ref = request.get('original_var_ref')
+        if original_ref is not None and id(original_ref) != id(var):
+            _style_attrs = ['color', 'y_label', 'legend_label', 'plot_type', 'y_scale', 'y_limit',
+                           'line_style', 'marker_size', 'marker_style', 'line_width',
+                           'alpha', 'colormap', 'colorbar_scale', 'colorbar_limits']
+            for _attr in _style_attrs:
+                orig_val = getattr(original_ref, _attr, None)
+                if orig_val is not None:
+                    current_val = getattr(var, _attr, None)
+                    if current_val != orig_val:
+                        print_manager.custom_debug(f"🔍 [STYLE_SYNC] Copying {_attr}={orig_val} from user ref to fresh var")
+                        setattr(var, _attr, orig_val)
+
         # This is where we'd need to handle custom variables (ensure they have the right attributes)
         if hasattr(var, 'data_type'):
             print_manager.dependency_management(f"Variable data_type: {var.data_type}")
