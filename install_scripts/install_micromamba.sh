@@ -28,6 +28,11 @@ echo ""
 echo "🚀 Starting micromamba installation..."
 echo ""
 
+# Ensure micromamba knows where its environments live
+# Without this, `micromamba run -n` can look in the wrong prefix
+# (e.g., inside Homebrew's Cellar instead of ~/micromamba)
+export MAMBA_ROOT_PREFIX="$HOME/micromamba"
+
 # Step 1: Initialize Micromamba (includes Homebrew setup)
 echo "🔹 Step 1/4: Setting up Homebrew and Micromamba..."
 ./install_scripts/1_init_micromamba.sh
