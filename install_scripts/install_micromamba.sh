@@ -96,9 +96,11 @@ if [ -w ~/.zshrc ] 2>/dev/null || touch ~/.zshrc 2>/dev/null; then
         echo "✅ Auto-activation already configured!"
     fi
 else
-    echo "⚠️  Could not write to ~/.zshrc (permission denied)"
-    echo "   To fix, run: chmod u+w ~/.zshrc"
-    echo "   Then run:    echo 'micromamba activate plotbot_v1_micromamba 2>/dev/null || true' >> ~/.zshrc"
+    echo "⚠️  Auto-activation skipped: your terminal config file (~/.zshrc) is read-only"
+    echo "   This is optional — VS Code selects the environment automatically via the kernel picker."
+    echo "   For terminal use, you can fix this by running:"
+    echo "     chmod u+w ~/.zshrc"
+    echo "     echo 'micromamba activate plotbot_v1_micromamba 2>/dev/null || true' >> ~/.zshrc"
 fi
 
 echo ""
