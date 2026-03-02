@@ -136,13 +136,13 @@ If you prefer to install prerequisites manually or already have them:
     *   If you've previously attempted to install Plotbot, remove any existing installation:
 
         ```bash
-        rm -rf ~/GitHub/Plotbot
+        rm -rf ~/GitHub/plotbot-v1
         ```
 
     *   Clone this repository and change your working directory to the Plotbot directory:
 
         ```bash
-        git clone https://github.com/Sonified/Plotbot.git && cd Plotbot && echo "✅ Download complete"
+        git clone https://github.com/Sonified/plotbot-v1.git && cd plotbot-v1 && echo "✅ Download complete"
         ```
 
 2.  **Run the Unified Installation Script** 
