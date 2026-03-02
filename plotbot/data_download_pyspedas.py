@@ -18,9 +18,21 @@ from .data_classes.data_types import data_types, get_local_path # To get pyspeda
 from .time_utils import daterange
 from pathlib import Path
 from datetime import timedelta
+from dataclasses import dataclass
 # Add other necessary imports (time, etc.) as needed
 
 # Import the precise download function for efficiency - moved to function level
+
+@dataclass
+class SmartCheckResult:
+    """Partial local coverage result from smart_check_local_pyspedas_files.
+
+    Returned only when SOME files exist locally but others are missing.
+    When ALL files exist, a plain list is returned. When NO files exist, None is returned.
+    """
+    found_files: list       # Local files that already exist
+    missing_dates: list     # YYYYMMDD strings for dates with no local file
+    all_present: bool       # Always False when this object is returned
 
 def smart_check_local_pyspedas_files(plotbot_key, trange):
     """Smart local file checking for pyspedas data types.
@@ -77,63 +89,79 @@ def smart_check_local_pyspedas_files(plotbot_key, trange):
         local_path = local_path_template.format(data_level=data_level)
         base_path = Path(local_path)
         
-        expected_files = []
-        
+        found_files = []
+        missing_dates = []
+
+        import glob as glob_module
+
         if file_time_format == 'daily':
             # Daily files - one file per day
             current_date = start_dt.date()
             end_date = end_dt.date()
-            
+
             while current_date <= end_date:
                 year_str = str(current_date.year)
                 date_str = current_date.strftime('%Y%m%d')
-                
+
                 # Construct filename pattern (may contain wildcards like v*.cdf)
                 filename_pattern = file_pattern.format(data_level=data_level, date_str=date_str)
-                
+
                 # Full glob pattern
                 glob_pattern = str(base_path / year_str / filename_pattern)
-                
+
                 # Use glob to find matching files (handles wildcards like v*)
-                import glob as glob_module
                 matching_files = glob_module.glob(glob_pattern)
-                
-                # Add all matching files to expected_files
-                expected_files.extend(matching_files)
-                
+
+                if matching_files:
+                    found_files.extend(matching_files)
+                else:
+                    missing_dates.append(date_str)
+
                 current_date += timedelta(days=1)
-                
+
         elif file_time_format == '6-hour':
             # 6-hour files - multiple files per day
             from .time_utils import get_needed_6hour_blocks
-            needed_blocks = get_needed_6hour_blocks(trange)
-            
-            import glob as glob_module
-            for date_str, hour_str in needed_blocks:
-                year_str = date_str[:4]
+            needed_blocks = get_needed_6hour_blocks(start_dt, end_dt)
+
+            for block_date, block_num in needed_blocks:
+                year_str = str(block_date.year)
+                date_str = block_date.strftime('%Y%m%d')
+                hour_str = f"{block_num * 6:02d}"
                 date_hour_str = f"{date_str}{hour_str}"
-                
+
                 # Construct filename pattern (may contain wildcards)
                 filename_pattern = file_pattern.format(data_level=data_level, date_hour_str=date_hour_str)
-                
+
                 # Full glob pattern
                 glob_pattern = str(base_path / year_str / filename_pattern)
-                
+
                 # Use glob to find matching files
                 matching_files = glob_module.glob(glob_pattern)
-                expected_files.extend(matching_files)
-        
-        # Check which files actually exist
-        existing_files = [f for f in expected_files if Path(f).exists()]
-        
-        if existing_files:
+
+                if matching_files:
+                    found_files.extend(matching_files)
+                else:
+                    missing_dates.append(date_str)
+
+        # Filter to files that actually exist (glob results should exist, but be safe)
+        existing_files = [f for f in found_files if Path(f).exists()]
+
+        if not existing_files and not missing_dates:
+            # No files found at all
+            print_manager.status(f"📡 Smart check: {plotbot_key} files not found locally, will download")
+            return None
+        elif existing_files and not missing_dates:
+            # All files found, no gaps
             print_manager.status(f"✅ Smart check found {len(existing_files)} local {plotbot_key} file(s):")
             for f in existing_files:
                 print_manager.status(f"   📁 {f}")
             return existing_files
         else:
-            print_manager.status(f"📡 Smart check: {plotbot_key} files not found locally, will download")
-            return None
+            # Partial coverage — some found, some missing
+            print_manager.status(f"⚠️ Smart check: partial coverage for {plotbot_key} — "
+                               f"{len(existing_files)} file(s) found, {len(missing_dates)} date(s) missing: {missing_dates}")
+            return SmartCheckResult(found_files=existing_files, missing_dates=missing_dates, all_present=False)
             
     except Exception as e:
         print_manager.debug(f"Smart file check failed for {plotbot_key}: {e}, falling back to pyspedas")
@@ -417,6 +445,78 @@ def _get_dates_in_range(start_str, end_str):
         print_manager.warning(f"Could not parse dates from trange for rename check: {start_str}, {end_str}. Error: {e}")
     return dates
 
+def _download_missing_dates(plotbot_key, smart_result):
+    """Download only the missing dates identified by smart_check_local_pyspedas_files.
+
+    Makes ONE pyspedas call covering the bounding range of all missing dates,
+    rather than N individual calls per date.
+
+    Args:
+        plotbot_key (str): The Plotbot data type key
+        smart_result (SmartCheckResult): Result with missing_dates list
+
+    Returns:
+        list: Downloaded file paths, or empty list on failure
+    """
+    if not smart_result.missing_dates:
+        return []
+
+    import pyspedas
+    # Compatibility shim: pyspedas 2.x moved mission modules under projects
+    if hasattr(pyspedas, 'projects'):
+        for _m in ['psp', 'wind']:
+            if not hasattr(pyspedas, _m) and hasattr(pyspedas.projects, _m):
+                setattr(pyspedas, _m, getattr(pyspedas.projects, _m))
+
+    PYSPEDAS_MAP = _get_pyspedas_map()
+    if plotbot_key not in PYSPEDAS_MAP:
+        print_manager.warning(f"Pyspedas mapping not defined for {plotbot_key}. Cannot download missing dates.")
+        return []
+
+    map_config = PYSPEDAS_MAP[plotbot_key]
+
+    # Build bounding trange from missing dates (YYYYMMDD strings, chronologically ordered)
+    earliest = smart_result.missing_dates[0]
+    latest = smart_result.missing_dates[-1]
+
+    gap_start = f"{earliest[:4]}-{earliest[4:6]}-{earliest[6:8]}"
+    latest_dt = datetime.strptime(latest, '%Y%m%d') + timedelta(days=1)
+    gap_end = latest_dt.strftime('%Y-%m-%d')
+    gap_trange = [gap_start, gap_end]
+
+    print_manager.status(f"📡 Downloading missing dates for {plotbot_key}: {gap_trange}")
+
+    # Handle DFB precise download path
+    if map_config.get('download_method') == 'precise':
+        result = download_dfb_precise(gap_trange, plotbot_key, map_config)
+        if result and len(result) > 0:
+            return result
+
+    # Regular pyspedas download for the gap range
+    pyspedas_func = map_config['pyspedas_func']
+    pyspedas_datatype = map_config['pyspedas_datatype']
+    kwargs = map_config['kwargs']
+
+    try:
+        returned_data = pyspedas_func(
+            trange=gap_trange,
+            datatype=pyspedas_datatype,
+            no_update=False,
+            downloadonly=True,
+            notplot=True,
+            **kwargs
+        )
+        if returned_data and isinstance(returned_data, list) and len(returned_data) > 0:
+            print_manager.status(f"✅ Downloaded {len(returned_data)} file(s) for missing dates")
+            return returned_data
+        else:
+            print_manager.warning(f"No files returned for missing dates {gap_trange}")
+            return []
+    except Exception as e:
+        print_manager.error(f"Error downloading missing dates for {plotbot_key}: {e}")
+        return []
+
+
 def download_spdf_data(trange, plotbot_key):
     """Attempts to download data using pyspedas from SPDF.
     
@@ -434,10 +534,23 @@ def download_spdf_data(trange, plotbot_key):
     print_manager.debug(f"Attempting SPDF download for {plotbot_key} in range {trange}")
 
     # SMART CHECK: Look for local files first before calling pyspedas
-    local_files = smart_check_local_pyspedas_files(plotbot_key, trange)
-    if local_files:
+    smart_result = smart_check_local_pyspedas_files(plotbot_key, trange)
+
+    if smart_result is None:
+        # No local files at all — fall through to full download below
+        pass
+    elif isinstance(smart_result, SmartCheckResult):
+        # Partial coverage — download only the missing dates, then combine
+        gap_files = _download_missing_dates(plotbot_key, smart_result)
+        all_files = list(set(smart_result.found_files + gap_files))
+        if all_files:
+            print_manager.status(f"✅ Combined {len(smart_result.found_files)} local + {len(gap_files)} downloaded files for {plotbot_key}")
+            return all_files
+        # If somehow empty, fall through to full download
+    else:
+        # Plain list — all files present locally
         print_manager.status(f"✅ Using local {plotbot_key} files (skipping pyspedas)")
-        return local_files
+        return smart_result
 
     # Import pyspedas here so it reads the environment variables AFTER config is set
     import pyspedas

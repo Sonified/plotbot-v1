@@ -3,22 +3,56 @@
 echo "🔹 Initializing Micromamba (No-Sudo Installation)..."
 echo ""
 
-# Smart Homebrew detection: check for existing system Homebrew first
-# Standard locations: /opt/homebrew (Apple Silicon), /usr/local (Intel), ~/homebrew (no-sudo)
+# ============================================================================
+# Smart Homebrew detection
+# Problem: This script runs under #!/bin/bash, but the user's Homebrew PATH
+# setup may only be in .zshrc/.zprofile (macOS default shell is zsh).
+# So `command -v brew` can fail even when Homebrew is installed.
+# Solution: Check known binary locations FIRST, then fall back to PATH.
+# ============================================================================
+
+# Try to source shell profiles so brew might be on PATH
+for profile in "$HOME/.zprofile" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.bashrc"; do
+    [ -f "$profile" ] && source "$profile" 2>/dev/null || true
+done
+
+BREW_FOUND=false
+
+# Check 1: Is brew already on PATH? (covers all cases if profile sourcing worked)
 if command -v brew &> /dev/null; then
-    # Homebrew already exists on this system — use it
     export HOMEBREW_PREFIX="$(brew --prefix)"
+    BREW_FOUND=true
     echo "✅ Homebrew already installed at $HOMEBREW_PREFIX (using existing installation)"
-elif [ -f "/opt/homebrew/bin/brew" ]; then
-    export HOMEBREW_PREFIX="/opt/homebrew"
-    echo "✅ Homebrew found at $HOMEBREW_PREFIX"
-elif [ -f "/usr/local/bin/brew" ]; then
-    export HOMEBREW_PREFIX="/usr/local"
-    echo "✅ Homebrew found at $HOMEBREW_PREFIX"
-elif [ -f "$HOME/homebrew/bin/brew" ]; then
-    export HOMEBREW_PREFIX="$HOME/homebrew"
-    echo "✅ Homebrew found at $HOMEBREW_PREFIX"
-else
+fi
+
+# Check 2: Known installation locations (Apple Silicon, Intel, user-local)
+if [ "$BREW_FOUND" = false ]; then
+    for brew_path in "/opt/homebrew" "/usr/local" "$HOME/homebrew"; do
+        if [ -x "${brew_path}/bin/brew" ]; then
+            export HOMEBREW_PREFIX="$brew_path"
+            export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin:$PATH"
+            BREW_FOUND=true
+            echo "✅ Homebrew found at $HOMEBREW_PREFIX"
+            break
+        fi
+    done
+fi
+
+# Check 3: Search common alternate locations via `find` (catches edge cases)
+if [ "$BREW_FOUND" = false ]; then
+    for search_dir in "/opt" "/usr/local" "$HOME"; do
+        found_brew=$(find "$search_dir" -maxdepth 3 -name "brew" -type f -perm +111 2>/dev/null | head -1)
+        if [ -n "$found_brew" ]; then
+            export HOMEBREW_PREFIX="$(dirname "$(dirname "$found_brew")")"
+            export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin:$PATH"
+            BREW_FOUND=true
+            echo "✅ Homebrew found at $HOMEBREW_PREFIX (discovered via search)"
+            break
+        fi
+    done
+fi
+
+if [ "$BREW_FOUND" = false ]; then
     # No Homebrew found anywhere — install in user directory (no sudo required)
     export HOMEBREW_PREFIX="$HOME/homebrew"
     echo "📦 No existing Homebrew found. Installing in user directory (no sudo required)..."
@@ -64,14 +98,16 @@ else
     PROFILE_FILE="$HOME/.bash_profile"
 fi
 
-# Add Homebrew to shell profile if not already present
-if ! grep -q "HOMEBREW_PREFIX.*homebrew" "$PROFILE_FILE" 2>/dev/null; then
-    echo ""
-    echo "📝 Adding Homebrew to $PROFILE_FILE..."
-    
-    cat >> "$PROFILE_FILE" << 'EOF'
+# Only add Homebrew to shell profile if we installed it ourselves (user-local install)
+# If Homebrew was already on the system (e.g., /opt/homebrew, /usr/local), don't modify profiles
+if [ "$HOMEBREW_PREFIX" = "$HOME/homebrew" ]; then
+    if ! grep -q "HOMEBREW_PREFIX.*homebrew" "$PROFILE_FILE" 2>/dev/null; then
+        echo ""
+        echo "📝 Adding Homebrew to $PROFILE_FILE..."
 
-# Homebrew (user installation)
+        cat >> "$PROFILE_FILE" << 'EOF'
+
+# Homebrew (user installation - added by Plotbot installer)
 export HOMEBREW_PREFIX="$HOME/homebrew"
 export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin:$PATH"
 export MANPATH="$HOMEBREW_PREFIX/share/man:$MANPATH"
@@ -79,15 +115,15 @@ export INFOPATH="$HOMEBREW_PREFIX/share/info:$INFOPATH"
 export HOMEBREW_CASK_OPTS="--appdir=$HOME/Applications"
 export HOMEBREW_FORCE_VENDOR_RUBY=1
 EOF
-    
-    echo "✅ Homebrew configuration added to $PROFILE_FILE"
-    
-    # For zsh, also add to .zprofile for login shells (macOS compatibility)
-    if [ "$SHELL_TYPE" = "zsh" ] && [ -n "$ZPROFILE_FILE" ]; then
-        if ! grep -q "HOMEBREW_PREFIX.*homebrew" "$ZPROFILE_FILE" 2>/dev/null; then
-            cat >> "$ZPROFILE_FILE" << 'EOF'
 
-# Homebrew (user installation)
+        echo "✅ Homebrew configuration added to $PROFILE_FILE"
+
+        # For zsh, also add to .zprofile for login shells (macOS compatibility)
+        if [ "$SHELL_TYPE" = "zsh" ] && [ -n "$ZPROFILE_FILE" ]; then
+            if ! grep -q "HOMEBREW_PREFIX.*homebrew" "$ZPROFILE_FILE" 2>/dev/null; then
+                cat >> "$ZPROFILE_FILE" << 'EOF'
+
+# Homebrew (user installation - added by Plotbot installer)
 export HOMEBREW_PREFIX="$HOME/homebrew"
 export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin:$PATH"
 export MANPATH="$HOMEBREW_PREFIX/share/man:$MANPATH"
@@ -95,11 +131,14 @@ export INFOPATH="$HOMEBREW_PREFIX/share/info:$INFOPATH"
 export HOMEBREW_CASK_OPTS="--appdir=$HOME/Applications"
 export HOMEBREW_FORCE_VENDOR_RUBY=1
 EOF
-            echo "✅ Homebrew configuration also added to $ZPROFILE_FILE"
+                echo "✅ Homebrew configuration also added to $ZPROFILE_FILE"
+            fi
         fi
+    else
+        echo "✅ Homebrew already configured in $PROFILE_FILE"
     fi
 else
-    echo "✅ Homebrew already configured in $PROFILE_FILE"
+    echo "✅ Using system Homebrew at $HOMEBREW_PREFIX (no profile changes needed)"
 fi
 
 # Source the profile to apply changes

@@ -1,6 +1,9 @@
 #!/bin/bash
 
-echo "🚀 Welcome to Plotbot Installation"
+# Auto-detect version from source code
+PLOTBOT_VERSION=$(grep '__version__' plotbot/__init__.py 2>/dev/null | head -1 | cut -d'"' -f2 || echo "unknown")
+
+echo "🚀 Welcome to Plotbot Installation ($PLOTBOT_VERSION)"
 echo "===================================="
 echo ""
 echo "Plotbot is a space physics data visualization, audification, and analysis tool"
