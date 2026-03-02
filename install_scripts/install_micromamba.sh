@@ -88,8 +88,18 @@ setup_ide_config "$HOME/micromamba/envs/plotbot_v1_micromamba/bin/python3" "plot
 
 echo ""
 echo "🔧 Setting up auto-activation..."
-echo 'micromamba activate plotbot_v1_micromamba 2>/dev/null || true' >> ~/.zshrc
-echo "✅ Auto-activation configured!"
+if [ -w ~/.zshrc ] 2>/dev/null || touch ~/.zshrc 2>/dev/null; then
+    if ! grep -q 'micromamba activate plotbot_v1_micromamba' ~/.zshrc 2>/dev/null; then
+        echo 'micromamba activate plotbot_v1_micromamba 2>/dev/null || true' >> ~/.zshrc
+        echo "✅ Auto-activation configured!"
+    else
+        echo "✅ Auto-activation already configured!"
+    fi
+else
+    echo "⚠️  Could not write to ~/.zshrc (permission denied)"
+    echo "   To fix, run: chmod u+w ~/.zshrc"
+    echo "   Then run:    echo 'micromamba activate plotbot_v1_micromamba 2>/dev/null || true' >> ~/.zshrc"
+fi
 
 echo ""
 echo "🎉 Micromamba installation completed successfully!"
