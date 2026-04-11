@@ -1,5 +1,45 @@
 # Captain's Log — 2026-04-10
 
+## v1.09 — Legacy variable cleanup + honest correlation-methods explainer for Jaye's Monday presentation
+
+Maintenance pass on the E27 spectral correlation notebook plus a substantive rewrite of the methods/caveats section. No scientific results changed — every r, every p, every n is bitwise identical to v1.08 — but the codebase is meaningfully tidier and the notes section is now both consistent with the current pipeline and useful for someone presenting the work.
+
+**Legacy variable sweep** — three rounds of cuts:
+
+1. **Cell 8 (Step 5)** — removed 5 dead alias lines: `band_30s_smooth`, `hamogram_smooth`, and the `rp_h_raw/sm`, `rpL_h_raw/sm`, `rs_h_raw/sm`, `n_h_raw/sm` block. Pure refactor debris from when this cell was named the "30s smoothed hamogram" cell — downstream code never consulted any of them.
+
+2. **Cell 10 (Step 7)** — removed the entire `*_band_raw`, `*_full_raw`, `*_band_sm`, `*_full_sm` alias block (21 lines, ~24 names). These existed solely as safety rails during the smoothing-removal refactor in v1.08 and zero downstream code ever consulted them. Kept the `n_*_total` aliases (`n_ham_total`, `n_ta_total`, etc.) because cell 12 references them 35+ times — they're the canonical sample-size names downstream, not aliases.
+
+3. **Cell 12 (Step 9)** — removed 6 dead `_lo_*` unpack lines (every per-target below-cutoff unpack except hamogram). The hamogram below-cutoff unpack was *almost* cut on the same logic, but `_hg_lo_rpL` and `_hg_lo_rs` are actually used in Step 9's BAND SPECIFICITY block (5 + 1 references). The first cleanup pass missed that asymmetry — the hamogram is the only target where Step 9 prints both above and below — and we hit a `NameError` on the next run. Restored those two via a slim `_, _hg_lo_rpL, _, _hg_lo_rs, _ = hg_below` line. Lesson logged: when sweeping unused variables, the hamogram is special-cased in Step 9; don't blanket-cut the whole `_lo` group.
+
+**Net cuts**: ~30 dead alias lines removed, zero behavioral change, all 14 `*_below` correlation tuples and all 7 `n_*_total` names still live where they're actually consumed.
+
+**Notes section overhaul** — four subsections were stale or moot under the v1.08 native-binning regime, plus a substantive new methods explainer was added at Robert's request for Jaye's Monday presentation:
+
+- **NEW: "How we measured correlations: four metrics, two reported, one principle"** — replaces the old "Pearson vs log-Pearson vs Spearman" subsection with a much more honest treatment. Walks through what each of the four metrics tests, what each one assumes, and when it's the right tool. Crucially, **does not claim log-Pearson is universally appropriate** — explicitly calls out that log-log Pearson is more theoretically motivated for the ratio targets ($n_{\text{ham}}/n_{\text{core}}$ and the temperature anisotropies, where $y$ is itself log-distributed) and that the Spearman > log-Pearson gap on $n_{\text{ham}}/n_{\text{core}}$ ($+0.65$ vs $+0.39$) is the direct symptom of this. The rationale for keeping log-Pearson + Spearman as the headline metrics is now grounded in the **agreement principle**: log-Pearson is parametric with assumed functional form, Spearman is distribution-free with no functional form, and when two methodologically distinct tests agree on direction and significance the result is robust regardless of the shape. The subsection ends with a verbatim "what to say if asked at a presentation" pull-quote that Jaye can lift directly. This was the result of Robert pushing back on an earlier hand-wave that "log-Pearson is the natural fit" — it isn't, universally, and the rewrite says so plainly.
+
+- **REWRITTEN: "Why native binning instead of smoothing"** — was the v1.07-and-earlier "Why smoothing, and what it costs us" subsection, fully stale after v1.08 removed smoothing. Now explains why smoothing was tried first (noise suppression), the two problems we hit (scipy's `uniform_filter1d` propagating NaNs through its cumulative-sum implementation, and smoothing introducing autocorrelation that biased p-values), and why 60s native binning replaced it (one bin = one independent sample, no $n_{\text{eff}}$ bookkeeping needed, scale-validated by the Step 10 stress test).
+
+- **REWRITTEN: "$n_{\text{ham}}/n_{\text{core}}$: still worth a detrend test"** — was the old "n_ham red flag" subsection that talked about smoothing inflation (Pearson jumping from raw 0.17 to smoothed 0.47, which doesn't apply now). The detrend recommendation is *still valid* but for a different reason: not smoothing-induced autocorrelation, but possible shared long-timescale structure (PSP heliocentric distance evolution, solar wind regime change) over the 80-minute window. The new framing makes the detrend test a forward-looking spot-check rather than a damage assessment. Robert's question "we're talking about detrending... that still fits for our binned approach? we're no longer smoothing" was a good catch — detrending is orthogonal to smoothing (smoothing kills high-frequency noise; detrending kills low-frequency drift) and is in fact *cleaner* to apply now because there's no autocorrelation bookkeeping to worry about.
+
+- **DELETED: "Effective-n is a conservative estimate"** — entirely moot under native binning (each bin is one independent sample by construction, so $n_{\text{eff}} = n$ trivially).
+
+- **TRIMMED: "Next steps for paper-grade rigor"** — removed the "block bootstrap for honest p-values on smoothed data" item (no smoothing means honest p-values are the default). List went from 5 items to 4: reproduce on a second encounter, detrend $n_{\text{ham}}/n_{\text{core}}$ + above-cutoff power, scan the cutoff across 5–20 Hz to verify a plateau, derive the cutoff from theory.
+
+**Round-trip lessons captured**:
+
+1. *"Useful legacy variables vs sloppy code"* — Robert asked the meta-question "is keeping legacy variables sloppy or actually useful?" The answer that emerged in this session: real legacy variables that bridge a rename or preserve a useful dual representation are fine; alias blocks that exist solely as "safety rails during a refactor" should be cut the moment the refactor lands. The `*_band_raw / *_full_sm` block was a textbook example — written for a correct moment, never cleaned up after the moment passed.
+
+2. *Don't blanket-trust unused-variable scans on print-heavy code* — the first cleanup pass cut `_hg_lo_rpL` and `_hg_lo_rs` because a regex count said they were unused. They were used inside a print f-string that the regex skim missed. Lesson: when cutting unpacked names from a tuple, look at the print blocks too, not just direct uses.
+
+3. *VS Code Jupyter kernel is a fragile beast* — the user hit a kernel hang during this session that had nothing to do with our edits. Switching to a different kernel resolved it instantly. Plotbot's `ham` data type uses `'data_sources': ['local_cdf']` only (no download path), so when `ham.datetime_array` came back as `None` after the kernel hang, it was kernel-state corruption and not a missing-file problem. The local CDF was right where it was supposed to be the whole time. The password prompt the user saw was for the orthogonal `mag_rtn` Berkeley remote-version-check, not for ham data.
+
+**Files touched**: `plotbot/__init__.py` (version + commit message), `docs/captains_logs/captains_log_2026-04-10.md` (this entry), `example_notebooks/spectral_correlation_e27.ipynb` (cells 8, 10, 12, 14).
+
+**Net diff**: ~30 dead lines removed from cells 8/10/12, ~150 lines of substantive notes-section rewrite in cell 14. No numerical results changed, no scientific claims changed, headline still log-Pearson $r = +0.57, p = 5 \times 10^{-8}$ for the hamogram. Ready for Jaye to present Monday with the methods explainer at the bottom of the notebook as backing material.
+
+---
+
 ## v1.08 — Seven-target pipeline, velocity-selectivity hierarchy, 60s default binning, smoothing fully removed
 
 Further refinement to the E27 spectral correlation notebook after v1.07. Where v1.07 established the Landau-KAW mechanism from five observables, v1.08 adds two more anisotropy targets (core and neck temperature anisotropies per Jaye's bulk-plasma-heating question), simplifies the binning default to one-minute windows, purges dead smoothing code, and adds a scale stress test cell that reruns the pipeline across multiple bin sizes. Net result: a cleaner, more defensible story with an additional physical finding (the three-population velocity-selectivity hierarchy).
