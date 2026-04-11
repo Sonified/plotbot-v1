@@ -474,10 +474,10 @@ RESET = '\033[0m'
 # Version, Date, and Welcome Message for Plotbot
 #------------------------------------------------------------------------------
 
-__version__ = "2026_03_02_v1.05"
+__version__ = "2026_04_10_v1.06"
 
 # Commit message for this version
-__commit_message__ = "v1.05 Installer: Robust Homebrew detection, auto-version banner"
+__commit_message__ = "v1.06 Feature: E27 spectral correlation notebook (hamogram vs B_N, three-target pipeline)"
 
 # Print the version and commit message
 print(f"""

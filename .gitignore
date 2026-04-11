@@ -20,6 +20,9 @@ data/cdf_files/PSP_Waves/
 data/psp/Hamstrings/
 data/cdf_files/Hamstrings/
 
+# Hamstrings encounter data (top-level)
+Hamstrings_E27/
+
 .DS_Store
 .vscode/
 Thumbs.db
