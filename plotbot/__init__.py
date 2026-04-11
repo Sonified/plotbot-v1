@@ -474,10 +474,10 @@ RESET = '\033[0m'
 # Version, Date, and Welcome Message for Plotbot
 #------------------------------------------------------------------------------
 
-__version__ = "2026_04_10_v1.07"
+__version__ = "2026_04_10_v1.08"
 
 # Commit message for this version
-__commit_message__ = "v1.07 Feature: E27 spectral correlation - Landau damping of KAWs, 5-target pipeline, beam pinned at 2.2 x v_A"
+__commit_message__ = "v1.08 Refactor: 7 hammerhead targets, velocity-selectivity via 3-population anisotropy, 60s native binning default, smoothing removed"
 
 # Print the version and commit message
 print(f"""

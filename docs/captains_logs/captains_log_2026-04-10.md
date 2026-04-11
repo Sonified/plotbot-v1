@@ -1,5 +1,104 @@
 # Captain's Log — 2026-04-10
 
+## v1.08 — Seven-target pipeline, velocity-selectivity hierarchy, 60s default binning, smoothing fully removed
+
+Further refinement to the E27 spectral correlation notebook after v1.07. Where v1.07 established the Landau-KAW mechanism from five observables, v1.08 adds two more anisotropy targets (core and neck temperature anisotropies per Jaye's bulk-plasma-heating question), simplifies the binning default to one-minute windows, purges dead smoothing code, and adds a scale stress test cell that reruns the pipeline across multiple bin sizes. Net result: a cleaner, more defensible story with an additional physical finding (the three-population velocity-selectivity hierarchy).
+
+### New scientific findings
+
+**The three-population anisotropy hierarchy (Jaye's question answered).**
+Added `Tperp_core/Tpar_core` and `Tperp_neck/Tpar_neck` as two new correlation targets, alongside the existing `Tperp_ham/Tpar_ham`. All three are correlated against above-cutoff wave power at the same 60s native binning. Result:
+
+- **ham**: log-Pearson = -0.352, Spearman = -0.279, p ~ 0.001 — **significant**
+- **neck**: log-Pearson = -0.065, Spearman = +0.132 — **null**
+- **core**: log-Pearson = -0.103, Spearman = +0.008 — **null**
+
+The ham population is the only one showing significant wave-power response. Physical interpretation: Landau resonance requires `v_par ~ omega/k_par`, and with the beam pinning at 2.2 × v_A the resonant parallel velocity is far above the core thermal speed (typically v_core,th ~ 0.1-0.3 × v_A). The core has essentially zero particles at the Landau-resonant velocity and does not participate. **The hierarchy ham >> neck ~ core is direct evidence of velocity-selective wave-particle coupling**, not broadband plasma heating. Answer to Jaye's bulk-heating question: on the 60s timescale, direct wave-to-core heating via this channel is **not observed**; the waves operate specifically on the suprathermal tail.
+
+**Medians of the three populations** (from actual HamPy-fitted data, 60s binned):
+
+- `core T_perp/T_par`: median ~0.66 → parallel-dominated
+- `neck T_perp/T_par`: median ~3.46 → perpendicular-dominated
+- `ham  T_perp/T_par`: median ~3.14 → perpendicular-dominated
+
+The ham and neck populations have T_perp > T_par in the fitted sub-population moments because the hammerhead "cap" shape comes from the **perpendicular velocity-space diffusion** described in Verniero et al. (2022). The core is a roughly thermal bulk population with a slight parallel bias. This corrects an earlier misstatement in v1.07 where I had claimed hammerheads were parallel-dominated in temperature moments (they're parallel in DRIFT velocity, not temperature).
+
+**The corrected Landau discriminator.** The negative sign of the ham anisotropy correlation is now framed as the **discriminating signature** between Landau damping and cyclotron-resonance scattering (Verniero et al. 2022's alternative mechanism):
+
+- **Landau damping** pumps T_par exclusively → T_perp/T_par goes DOWN
+- **Cyclotron scattering** pumps T_perp → T_perp/T_par would go UP
+
+Our observed negative correlation **favors the Landau interpretation** over cyclotron scattering, because the sign would be wrong for the cyclotron mechanism. This is a sharper claim than "consistent with Landau" — it's a specific falsifiable test that the 2022 mechanism fails.
+
+### Pipeline simplifications
+
+**Default bin_sec → 60s (one-minute bins).** Changed from 120s to 60s as the primary default. The 60s version is the sweet spot on the stress test: good sample size (n ~ 79), correlations still strong, beam clustering still holds, and "one-minute bins" is trivial to communicate. The 120s version oversells the saturation claim (the drift pinning is bin-averaging-dependent), and 30s is too noisy.
+
+**Smoothing infrastructure fully removed.** Previous versions carried legacy `smooth_factor_band`, `smooth_factor_ham`, and `smooth_factor_hamogram` variables. After the v1.07 native-binning refactor these became no-ops (all set to 1 by default), but the code still carried the infrastructure: `uniform_filter1d` calls, "SMOOTHED" duplicate plot panels in Step 5, "(smooth 1x)" labels, and RAW vs SMOOTHED duplicate correlation rows that contained identical numbers. v1.08 removes this dead weight:
+
+- `smooth_factor_hamogram` variable: gone
+- Step 5 `uniform_filter1d` calls: gone
+- Step 5 4-panel plot → clean 2-panel plot (just band PSD and hamogram)
+- Step 5 "SMOOTHED" duplicate correlation block: gone
+- Step 8 visual overlay smoothing knob: gone
+- All "(smooth 1x)" and "smoothed Nx" labels: gone
+- Verified: every single correlation coefficient, p-value, and diagnostic is bitwise identical to the pre-cleanup version (the smoothing was a no-op, so removing it had zero numerical impact)
+
+### New Step 10: Scale stress test
+
+Added a dedicated stress-test cell that reruns the full 7-target correlation pipeline at multiple bin sizes (30s, 60s, 120s, 240s) and prints a comparison table with significance stars. Also includes a bin-by-bin comparison of the beam-pinning diagnostic (`|v_drift/v_A|` median, IQR, CV, verdict). This directly tests which findings are robust vs bin-averaging artifacts, and confirms:
+
+- **Robust across all bin sizes**: hamogram, n_ham/n_core, ham anisotropy, core/neck nulls, below-cutoff controls
+- **Bin-size-dependent**: `|v_drift/v_A|` clustering tightness — CV grows from 0.12 (120s) to 0.20 (30s), with outlier values up to 5.8 × v_A appearing at 30s. The "pinning at 2.2 × v_A" is therefore a ~minute-averaging feature, not an instantaneous pin. Narrative updated accordingly from "pinned" to "clustered on ~minute timescales."
+
+### Narrative cleanup
+
+Multiple rounds of pass-through cleanup to eliminate stale references:
+
+- All top-of-cell comments reviewed and corrected: "4-panel overview" → "7-panel overview", "three targets" → "seven targets", "six result tuples" → "14 result tuples" (7 × 2 for above/below), etc.
+- Loose "band" terminology (inherited from the v1.05-era narrow 12-35 Hz band) replaced with precise "above-cutoff range" / "below cutoff" language throughout
+- Hardcoded "120s bins" labels in Step 9 findings → dynamic `f'{_bin_hamogram}s bins'` so they track the config
+- Ham anisotropy interpretation corrected (perpendicular-dominated in sub-pop moments, not parallel-dominated)
+- Saturation claim softened from "pinned" to "clustered around ~2.2 × v_A on ~minute averaging timescales"
+- Plot y-limits raised on three panels: `T_perp/T_par` from `(0.1, 10)` to `(0.1, 100)` (data ranges up to ~53 for neck), `|v_drift/v_A|` floor raised from 0.01 to 1.0 for resolution, `|v_drift|` raw given explicit `(100, 3000)` bounds
+
+### References section added
+
+Added a "References and theoretical grounding" section to the notes markdown cell with **eleven verified citations** looked up via web search (not memory):
+
+- **Bruno & Carbone (2013)** — Living Reviews in Solar Physics — turbulence cascade
+- **Alexandrova et al. (2013)** — Space Science Reviews — ion-scale instabilities
+- **Chen (2016)** — Philosophical Transactions of the Royal Society A — kinetic-scale dissipation review
+- **Bruno et al. (2015)** — GRL — ion break location vs plasma beta
+- **Howes et al. (2008)** — JGR Space Physics, 113, A05103 — cascade model
+- **Schekochihin et al. (2009)** — ApJS, 182, 310 — astrophysical gyrokinetics, KAW dispersion
+- **Bowen et al. (2020)** — ApJS, 246, 66 — PSP ion-scale wave survey
+- **Verniero et al. (2020)** — ApJS, 248, 5 — PSP proton beams + ion-scale waves
+- **Shankarappa et al. (2024)** — ApJ, 973, 20 — cyclotron damping heating rates
+- **Verniero et al. (2022)** — ApJ, 924, 112 — hammerhead discovery paper, cyclotron interpretation
+- **Das & Verniero (2025)** — EGU abstract EGU25-15609 — HamPy package
+
+Each citation tagged with which specific claim in the notebook it supports. Includes a disclaimer that the specific identifiers should be spot-checked before formal paper use.
+
+### Headline numbers as of v1.08 (60s native binning, n=79)
+
+| Target | Pearson | log-Pearson | log-log | Spearman |
+|---|---|---|---|---|
+| hamogram (above) | +0.55 | **+0.568** | +0.59 | **+0.665** |
+| n_ham/n_core (above) | **+0.718** | +0.391 | +0.659 | +0.645 |
+| Tperp/Tpar ham (above) | -0.211 | **-0.352** | -0.269 | -0.279 |
+| Tperp/Tpar core (above) | -0.152 | -0.103 | -0.104 | +0.008 |
+| Tperp/Tpar neck (above) | -0.036 | -0.065 | +0.017 | +0.132 |
+| \|v_drift/v_A\| (above) | -0.097 | -0.035 | -0.035 | -0.130 |
+| \|v_drift_raw\| (above) | **-0.304** | -0.252 | -0.240 | -0.255 |
+
+All seven targets show the expected band-specific behavior (disjoint below-cutoff controls near zero). Beam-drift median clusters at 2.23 × v_A with IQR width 0.34, consistent with KAW parallel phase velocity at `k_perp*rho_i ~ 2`.
+
+### Commit message
+`v1.08 Refactor: 7 hammerhead targets, velocity-selectivity via 3-population anisotropy, 60s native binning default, smoothing removed`
+
+---
+
 ## v1.07 — Landau damping of KAWs identified via beam velocity pinning
 
 Substantial scientific and statistical refinement to the E27 spectral correlation analysis. Tonight's work (continuation of the same day as v1.06) converted the result from "correlation in a band" into a specific, quantitatively-grounded Landau-damping-of-kinetic-Alfvén-waves story with **five independent observational signatures** and a **measured beam saturation velocity**.
