@@ -474,10 +474,10 @@ RESET = '\033[0m'
 # Version, Date, and Welcome Message for Plotbot
 #------------------------------------------------------------------------------
 
-__version__ = "2026_06_01_v1.10"
+__version__ = "2026_06_01_v1.11"
 
 # Commit message for this version
-__commit_message__ = "v1.10 Add Parker Four conference magnetic hole images from v1.0 repo"
+__commit_message__ = "v1.11 Add high-res showda_holes cell (epad_hr + proton_hr) to Magnetic Hole Finder notebook"
 
 # Print the version and commit message
 print(f"""
