@@ -474,10 +474,10 @@ RESET = '\033[0m'
 # Version, Date, and Welcome Message for Plotbot
 #------------------------------------------------------------------------------
 
-__version__ = "2026_04_10_v1.09"
+__version__ = "2026_06_01_v1.10"
 
 # Commit message for this version
-__commit_message__ = "v1.09 Cleanup: cut ~30 dead legacy variable aliases, refresh notes section with honest correlation-methods explainer for Monday presentation"
+__commit_message__ = "v1.10 Add Parker Four conference magnetic hole images from v1.0 repo"
 
 # Print the version and commit message
 print(f"""
