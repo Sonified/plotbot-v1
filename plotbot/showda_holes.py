@@ -425,8 +425,14 @@ def showda_holes(
             nrows, ncols = 1, 2
         elif num_panels == 3 or num_panels == 4:
             nrows, ncols = 2, 2
+        elif num_panels == 5 or num_panels == 6:
+            nrows, ncols = 3, 2
+        elif num_panels == 7 or num_panels == 8:
+            nrows, ncols = 4, 2
+        elif num_panels == 9 or num_panels == 10:
+            nrows, ncols = 5, 2
         else:
-            pm.error(f"Unsupported number of panels: {num_panels}. Max 4 supported.")
+            pm.error(f"Unsupported number of panels: {num_panels}. Max 10 supported.")
             return None, None
             
         # Global figure settings from kwargs
@@ -497,9 +503,9 @@ def showda_holes(
                 # Optionally add error text to the panel if plotting failed
                 ax.text(0.5, 0.5, f'Panel {i+1}\nPlot Failed', ha='center', va='center', transform=ax.transAxes, color='orange')
 
-        # Hide unused axes if num_panels is 3
-        if num_panels == 3:
-            axes_flat[-1].set_visible(False)
+        # Hide unused axes in grids with empty slots
+        for j in range(num_panels, nrows * ncols):
+            axes_flat[j].set_visible(False)
             
         # Use standard tight_layout; explicit y positioning handles title space
         fig.tight_layout() 

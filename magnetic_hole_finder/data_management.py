@@ -53,7 +53,7 @@ try:
     from plotbot import data_cubby # Import DataCubby to grab the instance
     from plotbot import mag_rtn as global_plotbot_mag_rtn # Import the global instance directly
 except ImportError:
-    print("Warning: Could not import Plotbot modules. Ensure Plotbot is in PYTHONPATH or installed.")
+    pass  # Normal at startup -- lazy re-import in download_and_prepare_high_res_mag_data() handles this
     plotbot_get_data = None
     mag_rtn_class = None 
     plotbot_print_manager = None # Fallback will be set in the function if this is None
@@ -85,23 +85,32 @@ def download_and_prepare_high_res_mag_data(trange):
     pm = plotbot_print_manager if 'plotbot_print_manager' in globals() and plotbot_print_manager is not None else SimplePrintManager()
     plotbot_trange = trange # Use the trange directly as passed
 
-    if plotbot_get_data is None or global_plotbot_mag_rtn is None:
-        pm.error("Plotbot's get_data or the global mag_rtn instance is not available.")
-        return None, None, None, None, None
+    # Lazy re-import: module-level import can fail due to import ordering,
+    # but by the time this function is called, plotbot is fully loaded.
+    _get_data = plotbot_get_data
+    _mag_rtn = global_plotbot_mag_rtn
+    if _get_data is None or _mag_rtn is None:
+        try:
+            from plotbot import get_data as _get_data
+            from plotbot import mag_rtn as _mag_rtn
+            from plotbot import print_manager as _pm
+            if _pm is not None:
+                pm = _pm
+        except ImportError:
+            pm.error("Plotbot's get_data or the global mag_rtn instance is not available.")
+            return None, None, None, None, None
 
     pm.status(f"Fetching MAG data (standard res) for {plotbot_trange} using Plotbot and global instance.")
     
     try:
         # 1. Call plotbot.get_data, passing the ACTUAL global plotbot.mag_rtn instance.
         #    This should trigger the download and update that specific instance.
-        pm.status(f"[MH_DM_DEBUG] >>> Calling plotbot_get_data with trange={plotbot_trange} and passing the global_plotbot_mag_rtn instance (id={id(global_plotbot_mag_rtn)}).")
-        plotbot_get_data(plotbot_trange, global_plotbot_mag_rtn) # Pass the actual global instance
-        pm.status(f"[MH_DM_DEBUG] <<< Returned from plotbot_get_data.")
+        pm.status(f"[MH_DM_DEBUG] >>> Calling plotbot get_data with trange={plotbot_trange} and mag_rtn instance (id={id(_mag_rtn)}).")
+        _get_data(plotbot_trange, _mag_rtn)
+        pm.status(f"[MH_DM_DEBUG] <<< Returned from plotbot get_data.")
 
-        # 2. Use the imported global instance (which should now be populated)
-        #    Alternatively, one could use data_cubby.grab('mag_rtn') but direct import is cleaner if available.
-        mag_instance_to_use = global_plotbot_mag_rtn
-        pm.status(f"[MH_DM_DEBUG] Using global_plotbot_mag_rtn instance (id={id(mag_instance_to_use)}).")
+        mag_instance_to_use = _mag_rtn
+        pm.status(f"[MH_DM_DEBUG] Using mag_rtn instance (id={id(mag_instance_to_use)}).")
 
         # Debug prints for the used instance
         pm.status(f"[MH_DM_DEBUG] Instance dir(): {dir(mag_instance_to_use)[:15]}... (first 15)")

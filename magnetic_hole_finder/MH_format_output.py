@@ -28,9 +28,8 @@ def output_magnetic_holes(magnetic_holes,
 
         izotope_output = []
         
-        # Set up the output directory structure based on trange and encounter number
-        print(f"Running setup_output_directory from iZotope_marker_file_output:")
-        sub_save_dir = setup_output_directory(trange, save_dir)
+        # Use save_dir directly -- the caller (core.py) already ran setup_output_directory
+        sub_save_dir = save_dir
 
         # Determine the encounter number using the get_encounter_number function
         start_date = trange[0].split(' ')[0] if ' ' in trange[0] else trange[0].split('/')[0]  # Extract the date part from trange[0]
@@ -136,10 +135,13 @@ def output_magnetic_holes(magnetic_holes,
                         if not line.startswith('[Metadata'):
                             file.write(line + '\n')
                 print(f"iZotope marker file saved to {file_path}")
+                return file_path
             except Exception as e:
                 print(f"Error saving file: {e}")
+                return None
 
         show_directory_button(save_dir)
+        return None
 
 def generate_marker_file_name(trange, version):
     # Use dateutil.parser to handle different time formats

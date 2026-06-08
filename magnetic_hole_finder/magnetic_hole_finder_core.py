@@ -339,7 +339,7 @@ def detect_magnetic_holes_and_generate_outputs(trange, base_save_dir: str, setti
             print(f"Run settings (error state) saved to: {settings_file_path}")
         except Exception as e_json:
             print(f"Error saving settings to JSON during failure: {e_json}")
-        return [], [], [], None, None, [], hole_counter_core 
+        return [], [], [], None, None, [], hole_counter_core, None
 
     # These are the full extended data arrays. Note names to avoid conflict with clipped versions.
     times_ext = dl_times
@@ -385,7 +385,7 @@ def detect_magnetic_holes_and_generate_outputs(trange, base_save_dir: str, setti
             print(f"Error saving run settings to JSON: {e}")
         # Return the downloaded (and clipped) data, but empty results for detection
         # Pass back br_clipped, bt_clipped, bn_clipped as they are from the original trange
-        return [], [], [], times_clipped, bmag_clipped_main, [], hole_counter_core # Potentially return br,bt,bn clipped too
+        return [], [], [], times_clipped, bmag_clipped_main, [], hole_counter_core, None
     
     # --- If not download_only, proceed with full analysis --- 
     sampling_rate_for_smoothing = determine_sampling_rate(times_ext, current_instrument_sampling_rate, True)
@@ -419,20 +419,21 @@ def detect_magnetic_holes_and_generate_outputs(trange, base_save_dir: str, setti
             settings.SAVE_MAIN_PLOT 
         )
 
+    marker_file_path = None
     if settings.IZOTOPE_MARKER_FILE_OUTPUT_MAX_AND_MIN or settings.IZOTOPE_MARKER_FILE_OUTPUT_GENERAL:
         print("Generating iZotope marker file...")
-        output_magnetic_holes(
+        marker_file_path = output_magnetic_holes(
             magnetic_holes,
-            hole_maxima_pairs, 
-            times_clipped,     
-            bmag_clipped_main, # Use the Bmag for the primary trange          
+            hole_maxima_pairs,
+            times_clipped,
+            bmag_clipped_main, # Use the Bmag for the primary trange
             settings.IZOTOPE_MARKER_FILE_OUTPUT_GENERAL,
-            settings.IZOTOPE_MARKER_FILE_OUTPUT_MAX_AND_MIN, 
+            settings.IZOTOPE_MARKER_FILE_OUTPUT_MAX_AND_MIN,
             trange,
             settings.MARKER_FILE_VERSION,
-            settings.search_in_progress_output, 
-            sub_save_dir, 
-            current_instrument_sampling_rate, 
+            settings.search_in_progress_output,
+            sub_save_dir,
+            current_instrument_sampling_rate,
             settings.MARKER_FILES_WITH_ANNOTATED_MARKERS,
             settings.MARKER_FILES_WITH_HOLE_NUMBERS,
             magnetic_hole_details # This should contain all info, including angles using original br,bt,bn
@@ -456,5 +457,6 @@ def detect_magnetic_holes_and_generate_outputs(trange, base_save_dir: str, setti
         print(f"Error saving run settings to JSON: {e}")
 
     print(f"Magnetic hole detection and output generation complete for trange: {trange}")
-    # Return the primary detection results and the counter
-    return magnetic_holes, hole_minima, hole_maxima_pairs, times_clipped, bmag_clipped_main, magnetic_hole_details, returned_counter 
+    if marker_file_path:
+        print(f"📍 Marker file: {marker_file_path}")
+    return magnetic_holes, hole_minima, hole_maxima_pairs, times_clipped, bmag_clipped_main, magnetic_hole_details, returned_counter, marker_file_path

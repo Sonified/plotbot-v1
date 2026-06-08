@@ -474,10 +474,10 @@ RESET = '\033[0m'
 # Version, Date, and Welcome Message for Plotbot
 #------------------------------------------------------------------------------
 
-__version__ = "2026_06_01_v1.11"
+__version__ = "2026_06_08_v1.12"
 
 # Commit message for this version
-__commit_message__ = "v1.11 Add high-res showda_holes cell (epad_hr + proton_hr) to Magnetic Hole Finder notebook"
+__commit_message__ = "v1.12 Self-contained Magnetic Hole Finder: settings at top, auto-pipeline detection to scatter plots"
 
 # Print the version and commit message
 print(f"""
