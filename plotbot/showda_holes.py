@@ -15,6 +15,8 @@ from .get_data import get_data
 from .print_manager import print_manager as global_pm
 from .get_encounter import get_encounter_number
 
+_marker_file_cache = {}
+
 # Placeholder for print_manager if it's not readily available as a module import
 # This is a common pattern if print_manager is instantiated elsewhere.
 # For a self-contained module, you might pass it as an argument or instantiate it.
@@ -143,6 +145,8 @@ def _plot_single_hodogram_panel(
     outside_color: str = 'blue',
     inside_size: int = 50,
     outside_size: int = 10,
+    hole_min_color: str = '#FF7000',
+    hole_min_size: int = 35,
     alpha: float = 0.7,
     base_fontsize: int = 12
 ):
@@ -163,11 +167,17 @@ def _plot_single_hodogram_panel(
         pm.error(f"Panel: Could not parse trange_plot: {trange_plot}. Error: {e}")
         return False
 
-    # 2. Load Marker Data
-    hole_intervals = _parse_marker_file(marker_filepath, pm)
+    # 2. Load Marker Data (cached across panels)
+    if marker_filepath in _marker_file_cache:
+        hole_intervals = _marker_file_cache[marker_filepath]
+        pm.debug(f"Panel: Using cached marker data for {marker_filepath}")
+    else:
+        hole_intervals = _parse_marker_file(marker_filepath, pm)
+        if hole_intervals:
+            _marker_file_cache[marker_filepath] = hole_intervals
     if not hole_intervals:
         pm.error(f"Panel: Failed for marker file {marker_filepath}")
-        return False # Error already printed by _parse_marker_file
+        return False
 
     # 3. Load X and Y Data using get_data (or assume pre-loaded)
     required_data_objects = []
@@ -231,6 +241,12 @@ def _plot_single_hodogram_panel(
     x_series_clipped = x_series[plot_start_time:plot_end_time]
     y_series_clipped = y_series[plot_start_time:plot_end_time]
 
+    # Drop duplicate timestamps (some instruments produce them); keep first occurrence
+    if x_series_clipped.index.duplicated().any():
+        x_series_clipped = x_series_clipped[~x_series_clipped.index.duplicated(keep='first')]
+    if y_series_clipped.index.duplicated().any():
+        y_series_clipped = y_series_clipped[~y_series_clipped.index.duplicated(keep='first')]
+
     if x_series_clipped.empty or y_series_clipped.empty:
         pm.warning(f"Panel: X({len(x_series_clipped)}) or Y({len(y_series_clipped)}) series empty after clipping to {plot_start_time} - {plot_end_time}.")
         # Check original lengths before clipping
@@ -273,8 +289,8 @@ def _plot_single_hodogram_panel(
         tolerance = target_dt_timedelta 
         pm.debug(f"Panel: Using reindex tolerance: {tolerance}")
 
-        x_series_reindexed = x_series.reindex(common_datetime_index, method='nearest', tolerance=tolerance)
-        y_series_reindexed = y_series.reindex(common_datetime_index, method='nearest', tolerance=tolerance)
+        x_series_reindexed = x_series_clipped.reindex(common_datetime_index, method='nearest', tolerance=tolerance)
+        y_series_reindexed = y_series_clipped.reindex(common_datetime_index, method='nearest', tolerance=tolerance)
         
         df_resampled = pd.DataFrame({'x': x_series_reindexed, 'y': y_series_reindexed})
         df_resampled.dropna(inplace=True)
@@ -293,39 +309,56 @@ def _plot_single_hodogram_panel(
         import traceback; pm.error(traceback.format_exc()) # Enable full traceback for resampling errors
         return False
 
-    # 6. Assign Colors & Sizes
-    colors_array = [outside_color] * len(common_times_for_coloring)
-    sizes_array = [outside_size] * len(common_times_for_coloring)
-    for i, current_pd_time in enumerate(common_times_for_coloring):
-        # Pandas Timestamps can be timezone-aware or naive.
-        # hole_intervals contain timezone-aware (UTC) datetimes.
-        # Comparison needs consistent awareness.
-        current_dt_time_utc = current_pd_time.tz_convert('UTC') if current_pd_time.tz is not None else current_pd_time.tz_localize('UTC')
-        
-        for hole_start, hole_end in hole_intervals:
-            # Ensure hole_start and hole_end are also UTC (should be from _parse_marker_file)
-            if hole_start <= current_dt_time_utc <= hole_end:
-                colors_array[i] = inside_color
-                sizes_array[i] = inside_size
-                break
-    num_inside = colors_array.count(inside_color)
+    # 6. Assign Colors & Sizes (vectorized)
+    times_i8 = common_times_for_coloring.values.astype('datetime64[ns]').view(np.int64)
+    inside_mask = np.zeros(len(times_i8), dtype=bool)
+    for hole_start, hole_end in hole_intervals:
+        hs = np.datetime64(hole_start, 'ns').view(np.int64)
+        he = np.datetime64(hole_end, 'ns').view(np.int64)
+        inside_mask |= (times_i8 >= hs) & (times_i8 <= he)
+    colors_array = np.where(inside_mask, inside_color, outside_color).tolist()
+    sizes_array = np.where(inside_mask, inside_size, outside_size).tolist()
+    num_inside = int(inside_mask.sum())
     pm.status(f"Panel: {num_inside} points inside holes.")
+
+    # 6b. Find the point closest to each hole's |B| minimum
+    hole_min_indices = []
+    for hole_start, hole_end in hole_intervals:
+        hs = np.datetime64(hole_start, 'ns').view(np.int64)
+        he = np.datetime64(hole_end, 'ns').view(np.int64)
+        in_this_hole = (times_i8 >= hs) & (times_i8 <= he)
+        if not in_this_hole.any():
+            continue
+        candidate_indices = np.where(in_this_hole)[0]
+        local_min_idx = candidate_indices[np.argmin(x_resampled[candidate_indices])]
+        hole_min_indices.append(local_min_idx)
+    num_mins = len(hole_min_indices)
+    pm.status(f"Panel: {num_mins} hole-minimum points marked.")
 
     # 7. Plot Hodogram onto the provided 'ax'
     try:
-        ax.scatter(x_resampled, y_resampled, c=colors_array, s=sizes_array, alpha=alpha, edgecolors='none')
+        outside_idx = ~inside_mask
+        ax.scatter(x_resampled[outside_idx], y_resampled[outside_idx],
+                   c=outside_color, s=outside_size, alpha=0.3, edgecolors='none', zorder=1)
+        ax.scatter(x_resampled[inside_mask], y_resampled[inside_mask],
+                   c=inside_color, s=inside_size, alpha=0.7, edgecolors='none', zorder=2)
+        if hole_min_indices:
+            ax.scatter(x_resampled[hole_min_indices], y_resampled[hole_min_indices],
+                       c='#FFFF00', s=hole_min_size * 0.4, alpha=1.0,
+                       edgecolors='black', linewidths=0.8, zorder=3)
 
         # Attempt to get labels from data object, fall back to subclass name
         final_x_label = x_label if x_label is not None else getattr(x_data_obj, 'legend_label', x_data_req.subclass_name)
         final_y_label = y_label if y_label is not None else getattr(y_data_obj, 'legend_label', y_data_req.subclass_name)
-        
+
         ax.set_xlabel(final_x_label, fontsize=base_fontsize)
         ax.set_ylabel(final_y_label, fontsize=base_fontsize)
         ax.set_title(title, fontsize=base_fontsize + 2)
 
         legend_elements = [
-            Line2D([0], [0], marker='o', color='w', label=f'In ({num_inside})', markerfacecolor=inside_color, markersize=np.sqrt(inside_size)), # Shorter legend labels
-            Line2D([0], [0], marker='o', color='w', label=f'Out ({len(colors_array) - num_inside})', markerfacecolor=outside_color, markersize=np.sqrt(outside_size))
+            Line2D([0], [0], marker='o', color='w', label=f'Out ({len(colors_array) - num_inside})', markerfacecolor=outside_color, markersize=np.sqrt(outside_size)),
+            Line2D([0], [0], marker='o', color='w', label=f'In ({num_inside})', markerfacecolor=inside_color, markersize=np.sqrt(inside_size)),
+            Line2D([0], [0], marker='o', color='w', label=f'Min ({num_mins})', markerfacecolor=hole_min_color, markersize=np.sqrt(hole_min_size))
         ]
         ax.legend(handles=legend_elements, loc='best', fontsize=base_fontsize - 1)
         ax.grid(True, linestyle=':', alpha=0.6)
@@ -392,8 +425,9 @@ def showda_holes(
                if successful. (None, None) on failure.
     """
     pm = global_pm # Use the imported global print_manager
-    
-    # --- Determine Main Title --- 
+    _marker_file_cache.clear()
+
+    # --- Determine Main Title ---
     final_main_title = main_title
     if final_main_title is None:
         try:
@@ -495,6 +529,8 @@ def showda_holes(
                 outside_color=panel_kwargs.get('outside_color', 'blue'),
                 inside_size=panel_kwargs.get('inside_size', 50),
                 outside_size=panel_kwargs.get('outside_size', 10),
+                hole_min_color=panel_kwargs.get('hole_min_color', '#FF7000'),
+                hole_min_size=panel_kwargs.get('hole_min_size', 35),
                 alpha=panel_kwargs.get('alpha', 0.7),
                 base_fontsize=panel_kwargs.get('base_fontsize', base_fontsize_global)
             )

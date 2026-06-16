@@ -15,16 +15,16 @@ def calculate_boundaries_and_w_angle(bmag, times, min_idx, lower_bound):
     tE = None
 
     # Search for the point on the left side of the minimum where bmag is closest to lower_bound
-    for i in range(min_idx, 0, -1):
-        if bmag[i] >= lower_bound[i]:
-            tS = i
-            break
-    
+    left_segment = bmag[0:min_idx + 1]
+    left_bound = lower_bound[0:min_idx + 1]
+    left_hits = np.where(left_segment >= left_bound)[0]
+    tS = left_hits[-1] if len(left_hits) > 0 else None
+
     # Search for the point on the right side of the minimum where bmag is closest to lower_bound
-    for i in range(min_idx, len(bmag)):
-        if bmag[i] >= lower_bound[i]:
-            tE = i
-            break
+    right_segment = bmag[min_idx:len(bmag)]
+    right_bound = lower_bound[min_idx:len(bmag)]
+    right_hits = np.where(right_segment >= right_bound)[0]
+    tE = right_hits[0] + min_idx if len(right_hits) > 0 else None
     
     if tS is not None and tE is not None:
         # Calculate the directional change angle ω between the vectors at tS and tE
@@ -39,21 +39,31 @@ def calculate_boundaries_and_w_angle(bmag, times, min_idx, lower_bound):
 current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 print(f'{current_time} - 📐 Hole Angle Calc Initialized')
 
-def calculate_hole_angle_and_boundaries(bmag, br, bt, bn, left_max_value_idx, right_max_value_idx, min_idx, sampling_rate, Bave_window_seconds, wide_angle_threshold, break_for_wide_angle):
-    # Calculate the moving average and standard deviation for the specific window
-    Bave, delta_B = calculate_moving_avg_and_stdev(bmag, Bave_window_seconds, sampling_rate)
-    lower_bound = Bave - delta_B  # Calculate the lower bound
+def calculate_hole_angle_and_boundaries(bmag, br, bt, bn, left_max_value_idx, right_max_value_idx, min_idx, sampling_rate, Bave_window_seconds, wide_angle_threshold, break_for_wide_angle, precomputed_lower_bound=None):
+    if precomputed_lower_bound is not None:
+        lower_bound = precomputed_lower_bound
+    else:
+        Bave, delta_B = calculate_moving_avg_and_stdev(bmag, Bave_window_seconds, sampling_rate)
+        lower_bound = Bave - delta_B
     
-    # Find the left boundary (tS) where bmag crosses Bave0 - δB starting from the left max and moving right
-    for tS in range(left_max_value_idx, min_idx):
-        if bmag[tS] <= lower_bound[tS]:  # Adjusted to use <= instead of >= since you're looking for when it drops below the bound
-            break
-    
-    # Find the right boundary (tE) where bmag crosses Bave0 - δB starting from the right max and moving left
-    for tE in range(right_max_value_idx, min_idx, -1):
-        if bmag[tE] <= lower_bound[tE]:  # Adjusted to use <= instead of >= since you're looking for when it drops below the bound
-            break
-    
+    # Find the left boundary (tS) where bmag drops below lower_bound, scanning right from left_max
+    left_segment = bmag[left_max_value_idx:min_idx]
+    left_bound_segment = lower_bound[left_max_value_idx:min_idx]
+    left_hits = np.where(left_segment <= left_bound_segment)[0]
+    tS = left_hits[0] + left_max_value_idx if len(left_hits) > 0 else None
+
+    # Find the right boundary (tE) where bmag drops below lower_bound, scanning left from right_max
+    if min_idx < right_max_value_idx + 1:
+        right_segment = bmag[min_idx:right_max_value_idx + 1]
+        right_bound_segment = lower_bound[min_idx:right_max_value_idx + 1]
+        right_hits = np.where(right_segment <= right_bound_segment)[0]
+        tE = right_hits[-1] + min_idx if len(right_hits) > 0 else None
+    else:
+        tE = None
+
+    if tS is None or tE is None:
+        return None, None, None
+
     # Calculate the directional change angle ω between the vectors at tS and tE
     B_tS = np.array([br[tS], bt[tS], bn[tS]])
     B_tE = np.array([br[tE], bt[tE], bn[tE]])

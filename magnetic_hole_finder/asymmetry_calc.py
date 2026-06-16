@@ -48,18 +48,21 @@ def process_asymmetry(
         next_second_samples = int(1 * sampling_rate)
         extended_search_end = min(len(bmag_clipped), right_max_value_idx + next_second_samples)
 
-        crossed_below = False
-        for j in range(right_max_value_idx, extended_search_end):
-            if bmag_clipped[j] < bmag_slow_smooth_clipped[j]:
-                crossed_below = True
-                break
+        segment = bmag_clipped[right_max_value_idx:extended_search_end]
+        smooth_segment = bmag_slow_smooth_clipped[right_max_value_idx:extended_search_end]
+        below_indices = np.where(segment < smooth_segment)[0]
+        crossed_below = len(below_indices) > 0
+        if crossed_below:
+            j = below_indices[0] + right_max_value_idx
 
         if crossed_below:
-            # Step 2: Find where Bmag rises above slow smooth Bmag again
-            for j in range(j, len(bmag_clipped)):
-                if bmag_clipped[j] > bmag_slow_smooth_clipped[j]:
-                    R_threshold_cross = j
-                    break
+            above_segment = bmag_clipped[j:len(bmag_clipped)]
+            smooth_above = bmag_slow_smooth_clipped[j:len(bmag_clipped)]
+            above_indices = np.where(above_segment > smooth_above)[0]
+            if len(above_indices) > 0:
+                R_threshold_cross = above_indices[0] + j
+            else:
+                R_threshold_cross = len(bmag_clipped) - 1
 
             # Now apply the fast smoothing method
             R_plateau_scan = R_threshold_cross
@@ -82,13 +85,15 @@ def process_asymmetry(
         else:
             # Step 3: If no crossing below, look forward two seconds for a new peak
             extended_search_end = min(len(bmag_clipped), int(right_max_value_idx + 2 * sampling_rate))
-            for j in range(right_max_value_idx, extended_search_end):
-                current_diff_percentage = abs(left_max_value - bmag_clipped[j]) / min(left_max_value, bmag_clipped[j])
-                if current_diff_percentage <= asymetric_peak_threshold:
-                    right_max_value_idx = j
-                    right_max_value = bmag_clipped[right_max_value_idx]
-                    print(f"New right maximum detected at index {right_max_value_idx}, value: {right_max_value}")
-                    break
+            search_segment = bmag_clipped[right_max_value_idx:extended_search_end]
+            min_vals = np.minimum(left_max_value, search_segment)
+            min_vals[min_vals == 0] = 1e-30
+            diffs = np.abs(left_max_value - search_segment) / min_vals
+            match_indices = np.where(diffs <= asymetric_peak_threshold)[0]
+            if len(match_indices) > 0:
+                right_max_value_idx = match_indices[0] + right_max_value_idx
+                right_max_value = bmag_clipped[right_max_value_idx]
+                print(f"New right maximum detected at index {right_max_value_idx}, value: {right_max_value}")
 
         # Re-scan the entire new region for a new minimum
         new_min_idx = np.argmin(bmag_clipped[L_threshold_cross:right_max_value_idx + 1]) + L_threshold_cross

@@ -79,28 +79,42 @@ def _detect_magnetic_holes_logic(trange, settings: HoleFinderSettings, current_i
     hole_minima = []
     hole_maxima_pairs = []
     magnetic_hole_details = []
-    i = 0
 
-    while i < len(bmag):   
-        start_of_potential_hole = i
-        while start_of_potential_hole < len(bmag) and bmag[start_of_potential_hole] >= bmag_slow_smooth[start_of_potential_hole]:
-            start_of_potential_hole += 1
-        
-        if start_of_potential_hole >= len(bmag):
-            break    
-        L_threshold_cross = start_of_potential_hole
+    # === PRECOMPUTE: Bave rolling stats (used by calculate_hole_angle_and_boundaries) ===
+    # Previously computed per-hole (~95% of runtime). Now computed once.
+    from .hole_angle_calc import calculate_moving_avg_and_stdev
+    sampling_rate = determine_sampling_rate(times_clipped, current_instrument_sampling_rate, True)
+    Bave_precomputed, delta_B_precomputed = calculate_moving_avg_and_stdev(bmag, settings.Bave_window_seconds, sampling_rate)
+    lower_bound_precomputed = Bave_precomputed - delta_B_precomputed
+
+    # === VECTORIZED: Precompute all threshold crossing pairs ===
+    # One numpy pass over 2M+ points instead of a Python while-loop scanning every sample.
+    below = bmag < bmag_slow_smooth
+    transitions = np.diff(below.astype(np.int8))
+    down_crossings = np.where(transitions == 1)[0] + 1
+    up_crossings = np.where(transitions == -1)[0] + 1
+
+    if len(below) > 0 and below[0]:
+        down_crossings = np.insert(down_crossings, 0, 0)
+    if len(below) > 0 and below[-1]:
+        up_crossings = np.append(up_crossings, len(bmag) - 1)
+
+    n_pairs = min(len(down_crossings), len(up_crossings))
+    crossing_pairs = list(zip(down_crossings[:n_pairs].tolist(), up_crossings[:n_pairs].tolist()))
+
+    cursor = 0
+
+    for L_threshold_cross, R_threshold_cross in crossing_pairs:
+        if L_threshold_cross < cursor:
+            continue
+
         hole_counter_core['potential'] += 1
-        
-        end_of_potential_hole = L_threshold_cross
-        while end_of_potential_hole < len(bmag) -1 and bmag[end_of_potential_hole] < bmag_slow_smooth[end_of_potential_hole]:
-            end_of_potential_hole += 1
-        R_threshold_cross = end_of_potential_hole
 
         if R_threshold_cross - L_threshold_cross <= settings.small_threshold_cross_flag_samples:
             hole_counter_core['small_threshold_cross'] += 1
             if settings.break_for_small_threshold_cross:
                 if settings.search_in_progress_output: print("-----⛔️ Skipping this small threshold cross.")
-                i = R_threshold_cross + 1
+                cursor = R_threshold_cross + 1
                 continue
             else:
                 R_threshold_cross = min(len(bmag)-1, R_threshold_cross + settings.small_threshold_cross_adjustment_samples)
@@ -109,7 +123,7 @@ def _detect_magnetic_holes_logic(trange, settings: HoleFinderSettings, current_i
 
         if L_threshold_cross >= R_threshold_cross or L_threshold_cross < 0 or R_threshold_cross >= len(bmag):
             if settings.search_in_progress_output: print(f"Warning: Invalid range after adjustment L_threshold_cross={L_threshold_cross}, R_threshold_cross={R_threshold_cross}. Skipping.")
-            i = max(L_threshold_cross, R_threshold_cross) + 1 # Ensure forward progress
+            cursor = max(L_threshold_cross, R_threshold_cross) + 1
             continue
 
         min_idx_relative = np.argmin(bmag[L_threshold_cross:R_threshold_cross + 1])
@@ -134,7 +148,7 @@ def _detect_magnetic_holes_logic(trange, settings: HoleFinderSettings, current_i
             left_max_value = bmag[left_max_value_idx]
         else:
             if settings.search_in_progress_output: print("Warning: Empty slice for finding the left maximum.")
-            i = R_threshold_cross + 1
+            cursor = R_threshold_cross + 1
             continue
         
         R_plateau_scan = R_threshold_cross
@@ -170,22 +184,22 @@ def _detect_magnetic_holes_logic(trange, settings: HoleFinderSettings, current_i
             hole_counter_core['asymmetric_skipped'] += 1 
             if settings.break_for_assymettry: 
                 if settings.search_in_progress_output: print("-----⛔️ Skipping hole due to asymmetry processing failure/skip (flagged by break_for_assymettry).")
-                i = R_threshold_cross + 1
+                cursor = R_threshold_cross + 1
                 continue
             if settings.search_in_progress_output: print("Warning: process_asymmetry returned None and not breaking. Hole might be skipped or results partial.")
-            i = R_threshold_cross + 1 
+            cursor = R_threshold_cross + 1
             continue
 
         status = hole_info_dict.get("status")
         if status == "complex" and settings.break_for_complex_hole:
             hole_counter_core['complex_skipped_by_flag'] +=1
             if settings.search_in_progress_output: print("-----⛔️ Skipping complex hole as per break_for_complex_hole setting.")
-            i = R_threshold_cross + 1
+            cursor = R_threshold_cross + 1
             continue
         if status == "unresolved_asymmetry" and settings.break_for_assymettry:
             hole_counter_core['unresolved_asymmetry_skipped_by_flag'] +=1
             if settings.search_in_progress_output: print("-----⛔️ Skipping unresolved asymmetry as per break_for_assymettry setting.")
-            i = R_threshold_cross + 1
+            cursor = R_threshold_cross + 1
             continue
 
         left_max_value_idx = hole_info_dict.get("left_max_value_idx", left_max_value_idx)
@@ -224,28 +238,34 @@ def _detect_magnetic_holes_logic(trange, settings: HoleFinderSettings, current_i
         
         hole_abs_depth = Bave - min_value
         hole_percentage_depth = (hole_abs_depth / Bave) * 100 if Bave != 0 else float('inf')
-        
+
+        if np.isnan(hole_percentage_depth):
+            if settings.search_in_progress_output: print(f"-----⛔️ Skipping hole with NaN depth (degenerate candidate).")
+            cursor = R_threshold_cross + 1
+            continue
+
         if hole_percentage_depth < settings.depth_percentage_threshold * 100:
             hole_counter_core['shallow'] += 1
             if settings.break_for_shallow_hole:
                 if settings.search_in_progress_output: print(f"-----⛔️ Skipping shallow hole (depth {hole_percentage_depth:.1f}%). Threshold: {settings.depth_percentage_threshold * 100}%")
-                i = R_threshold_cross + 1
+                cursor = R_threshold_cross + 1
                 continue
         if settings.search_in_progress_output: print(f"-----🕳️ Hole relative depth is {hole_percentage_depth:.1f}% (Threshold: {settings.depth_percentage_threshold*100}%)")
 
         tS, tE, W_angle = calculate_hole_angle_and_boundaries(
-            bmag, br, bt, bn, left_max_value_idx, right_max_value_idx, min_idx, 
-            sampling_rate, settings.Bave_window_seconds, settings.wide_angle_threshold, settings.break_for_wide_angle
+            bmag, br, bt, bn, left_max_value_idx, right_max_value_idx, min_idx,
+            sampling_rate, settings.Bave_window_seconds, settings.wide_angle_threshold, settings.break_for_wide_angle,
+            precomputed_lower_bound=lower_bound_precomputed
         )
         
         if tS is None: 
             hole_counter_core['wide_angle_skipped_by_flag'] += 1 
-            if settings.break_for_wide_angle: 
+            if settings.break_for_wide_angle:
                  if settings.search_in_progress_output: print("-----⛔️ Skipping hole due to wide angle processing (break_for_wide_angle).")
-                 i = R_threshold_cross + 1
+                 cursor = R_threshold_cross + 1
                  continue
             if settings.search_in_progress_output: print("Warning: Wide angle processing resulted in None for tS, but not breaking.")
-            i = R_threshold_cross + 1 
+            cursor = R_threshold_cross + 1
             continue
 
         hole_info_dict.update({"tS": tS, "tE": tE, "W_angle": W_angle})
@@ -260,7 +280,7 @@ def _detect_magnetic_holes_logic(trange, settings: HoleFinderSettings, current_i
             hole_counter_core['derivative_crossings'] += 1
             if settings.break_for_derivative_crossings:
                 if settings.search_in_progress_output: print(f"-----⛔️ Skipping hole due to excessive zero crossings ({zero_crossings}).")
-                i = R_threshold_cross + 1
+                cursor = R_threshold_cross + 1
                 continue
         hole_info_dict.update({"zero_crossings": zero_crossings})
         
@@ -287,7 +307,7 @@ def _detect_magnetic_holes_logic(trange, settings: HoleFinderSettings, current_i
         if settings.search_in_progress_output:
             print(f"-----⭐️ Magnetic hole confirmed from index {final_hole_info['left_max_value_idx']} to {final_hole_info['right_max_value_idx']}")
                 
-        i = final_hole_info["R_threshold_cross"] + 1
+        cursor = final_hole_info["R_threshold_cross"] + 1
         hole_counter_core['confirmed'] += 1
 
     return magnetic_holes, hole_minima, hole_maxima_pairs, times_clipped, bmag, magnetic_hole_details, hole_counter_core
@@ -297,8 +317,12 @@ def detect_magnetic_holes_and_generate_outputs(trange, base_save_dir: str, setti
     global hole_counter_core
     hole_counter_core.clear()
 
+    import time as _time
+    _t_pipeline_start = _time.perf_counter()
+    _timings = {}
+
     print(f"Starting analysis for trange: {trange}. Download_only mode: {settings.download_only}")
-    
+
     # NEW CODE: Clean up the base_save_dir to ensure no duplication
     # Check if we're reusing a path that already contains encounter-specific information
     # Look for encounter pattern like "/E15/E15_PSP_FIELDS_YYYY-MM-DD"
@@ -319,10 +343,11 @@ def detect_magnetic_holes_and_generate_outputs(trange, base_save_dir: str, setti
     # 2. Perform Data Preparation 
     # ... (data preparation logic: extend_trange, download_and_prepare_high_res_mag_data, calculate sampling rate, smooth, clip) ...
     # This part needs to run for both download_only and full analysis to get the basic data.
-    max_window_seconds = settings.smoothing_window_seconds 
+    max_window_seconds = settings.smoothing_window_seconds
     extended_trange = extend_time_range(trange, max(settings.smoothing_window_seconds, settings.min_max_finding_smooth_window))
-    # download_and_prepare_high_res_mag_data now returns 5 values, but we only strictly need times and bmag_extended for this stage
+    _t0 = _time.perf_counter()
     dl_times, dl_br, dl_bt, dl_bn, dl_bmag_extended = download_and_prepare_high_res_mag_data(extended_trange)
+    _timings['download_and_prepare'] = _time.perf_counter() - _t0
     
     if dl_times is None or dl_bmag_extended is None:
         print("Error: Failed to download or prepare data during initial data prep. Aborting.")
@@ -387,46 +412,53 @@ def detect_magnetic_holes_and_generate_outputs(trange, base_save_dir: str, setti
         # Pass back br_clipped, bt_clipped, bn_clipped as they are from the original trange
         return [], [], [], times_clipped, bmag_clipped_main, [], hole_counter_core, None
     
-    # --- If not download_only, proceed with full analysis --- 
+    # --- If not download_only, proceed with full analysis ---
+    _t0 = _time.perf_counter()
     sampling_rate_for_smoothing = determine_sampling_rate(times_ext, current_instrument_sampling_rate, True)
     bmag_slow_smooth_extended = efficient_moving_average(times_ext, bmag_ext, settings.smoothing_window_seconds, sampling_rate_for_smoothing, settings.mean_threshold)
     bmag_fast_smooth_extended = efficient_moving_average(times_ext, bmag_ext, settings.min_max_finding_smooth_window, sampling_rate_for_smoothing, settings.mean_threshold)
-    
+
     _, bmag_slow_smooth_clipped = clip_to_original_time_range(times_ext, bmag_slow_smooth_extended, trange)
     _, bmag_fast_smooth_clipped = clip_to_original_time_range(times_ext, bmag_fast_smooth_extended, trange)
+    _timings['smoothing_and_clip'] = _time.perf_counter() - _t0
 
     # 3. Perform the core hole detection
+    _t0 = _time.perf_counter()
     results = _detect_magnetic_holes_logic(
-        trange, settings, current_instrument_sampling_rate, 
-        times_ext, br_ext, bt_ext, bn_ext, bmag_ext, # Pass extended raw data, _detect_magnetic_holes_logic might need br,bt,bn from extended range for angle calc
-        times_clipped, bmag_clipped_main, bmag_slow_smooth_clipped, bmag_fast_smooth_clipped 
+        trange, settings, current_instrument_sampling_rate,
+        times_ext, br_ext, bt_ext, bn_ext, bmag_ext,
+        times_clipped, bmag_clipped_main, bmag_slow_smooth_clipped, bmag_fast_smooth_clipped
     )
+    _timings['detection_loop'] = _time.perf_counter() - _t0
     magnetic_holes, hole_minima, hole_maxima_pairs, _, _, magnetic_hole_details, returned_counter = results
 
     # 4. Generate outputs based on settings (if not in download_only mode)
     if settings.OUTPUT_MAIN_PLOT and times_clipped is not None and bmag_clipped_main is not None:
+        _t0 = _time.perf_counter()
         print("Generating main plot...")
         plot_mag_data_with_holes_and_minimum(
-            times_clipped, 
-            bmag_clipped_main, 
-            magnetic_holes, 
-            hole_minima, 
-            hole_maxima_pairs, 
-            settings.PLOT_HOLE_MINIMUM_ON_MAIN_PLOT, 
+            times_clipped,
+            bmag_clipped_main,
+            magnetic_holes,
+            hole_minima,
+            hole_maxima_pairs,
+            settings.PLOT_HOLE_MINIMUM_ON_MAIN_PLOT,
             settings.PLOT_THRESH_CROSS_ON_MAIN_PLOT,
             trange,
-            sub_save_dir, 
-            settings.SAVE_MAIN_PLOT 
+            sub_save_dir,
+            settings.SAVE_MAIN_PLOT
         )
+        _timings['main_plot'] = _time.perf_counter() - _t0
 
     marker_file_path = None
     if settings.IZOTOPE_MARKER_FILE_OUTPUT_MAX_AND_MIN or settings.IZOTOPE_MARKER_FILE_OUTPUT_GENERAL:
+        _t0 = _time.perf_counter()
         print("Generating iZotope marker file...")
         marker_file_path = output_magnetic_holes(
             magnetic_holes,
             hole_maxima_pairs,
             times_clipped,
-            bmag_clipped_main, # Use the Bmag for the primary trange
+            bmag_clipped_main,
             settings.IZOTOPE_MARKER_FILE_OUTPUT_GENERAL,
             settings.IZOTOPE_MARKER_FILE_OUTPUT_MAX_AND_MIN,
             trange,
@@ -436,25 +468,33 @@ def detect_magnetic_holes_and_generate_outputs(trange, base_save_dir: str, setti
             current_instrument_sampling_rate,
             settings.MARKER_FILES_WITH_ANNOTATED_MARKERS,
             settings.MARKER_FILES_WITH_HOLE_NUMBERS,
-            magnetic_hole_details # This should contain all info, including angles using original br,bt,bn
+            magnetic_hole_details
         )
+        _timings['marker_file'] = _time.perf_counter() - _t0
 
     if settings.EXPORT_AUDIO_FILES:
+        _t0 = _time.perf_counter()
         print("Exporting audio files...")
         audify_high_res_mag_data_without_plot(trange[0], trange[1], sub_save_dir, settings.AUDIO_SAMPLING_RATE, sub_save_dir)
+        _timings['audio_export'] = _time.perf_counter() - _t0
 
     # 5. Save all run settings to JSON
     settings_file_path = os.path.join(sub_save_dir, 'run_settings_and_summary.json')
-    settings_to_save = settings.__dict__.copy() # Get a copy of settings attributes
+    settings_to_save = settings.__dict__.copy()
     settings_to_save['trange_run'] = trange
     settings_to_save['sub_save_dir'] = sub_save_dir
-    settings_to_save['hole_counts'] = dict(returned_counter) # Add counts to the JSON
+    settings_to_save['hole_counts'] = dict(returned_counter)
     try:
         with open(settings_file_path, 'w') as f:
-            json.dump(settings_to_save, f, indent=4, default=str) # Added default=str for non-serializable like datetime
+            json.dump(settings_to_save, f, indent=4, default=str)
         print(f"Run settings and summary saved to: {settings_file_path}")
     except Exception as e:
         print(f"Error saving run settings to JSON: {e}")
+
+    _timings['total'] = _time.perf_counter() - _t_pipeline_start
+    print(f"\n⏱️  Pipeline Timing Report:")
+    for step, secs in _timings.items():
+        print(f"  [{step:.<25s}] {secs:.3f}s")
 
     print(f"Magnetic hole detection and output generation complete for trange: {trange}")
     if marker_file_path:

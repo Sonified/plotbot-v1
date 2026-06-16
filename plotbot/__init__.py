@@ -474,10 +474,10 @@ RESET = '\033[0m'
 # Version, Date, and Welcome Message for Plotbot
 #------------------------------------------------------------------------------
 
-__version__ = "2026_06_08_v1.12"
+__version__ = "2026_06_15_v1.13"
 
 # Commit message for this version
-__commit_message__ = "v1.12 Self-contained Magnetic Hole Finder: settings at top, auto-pipeline detection to scatter plots"
+__commit_message__ = "v1.13 Feature: Holey Grail batch scan pipeline, FFT spectrogram, hodogram z-ordering"
 
 # Print the version and commit message
 print(f"""
