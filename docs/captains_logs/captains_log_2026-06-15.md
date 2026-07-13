@@ -33,6 +33,10 @@ When batch-processing multiple regions, showda_holes checked `datetime_array is 
 
 Added `the_holey_grail/.env` for Jaye's restricted PSP SWEAP credentials. Batch scan auto-loads and sets `server_access.session.auth` to bypass the interactive getpass prompt.
 
+### v1.14 -- Added Holey Grail output to repo
+
+Un-ignored `the_holey_grail/E*/` directories so batch scan output (images, audio, run_settings) is tracked in the repo. 5 event regions, 135 files, ~261 MB of hodograms, time series, spectrograms, WAV audio, and marker files.
+
 ### Cadence discovery
 
 Investigated missing hodogram in-points. Root cause: standard epad (3.5s) and proton (1.75s) cadences are too slow to resolve sub-second holes. HR instruments (proton_hr at 0.22s, epad_hr at 0.87s) capture 4-5 samples per hole. The 4-panel standard plots will inherently have sparse in-points -- it's physics, not a bug.

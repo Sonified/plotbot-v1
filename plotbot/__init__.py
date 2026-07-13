@@ -474,10 +474,10 @@ RESET = '\033[0m'
 # Version, Date, and Welcome Message for Plotbot
 #------------------------------------------------------------------------------
 
-__version__ = "2026_06_15_v1.13"
+__version__ = "2026_07_13_v1.14"
 
 # Commit message for this version
-__commit_message__ = "v1.13 Feature: Holey Grail batch scan pipeline, FFT spectrogram, hodogram z-ordering"
+__commit_message__ = "v1.14 Add Holey Grail batch scan output to repo (images, audio, run settings)"
 
 # Print the version and commit message
 print(f"""

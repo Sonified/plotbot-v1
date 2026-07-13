@@ -121,8 +121,6 @@ docs/implementation_plans/
 .env
 the_holey_grail/.env
 
-# Holey Grail generated output (images, audio, settings per region)
-the_holey_grail/E*/
 
 # Test spectrogram images (dev artifacts)
 spectrogram_*.png
