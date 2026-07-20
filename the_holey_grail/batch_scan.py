@@ -437,14 +437,14 @@ def run_region(label, trange):
 
             fig_raw, ax_raw = render_spectrogram(
                 freqs, t_sec, pwr, t_start=t_start_full,
-                title=f'{label} — nperseg={nperseg}',
+                title=f'{label} — |B| — nperseg={nperseg}',
                 save_path=os.path.join(img_spec_full_raw, f'{label}_spectrogram_{nperseg}.png'),
                 dpi=150)
             plt.close(fig_raw)
 
             fig_comp, ax_comp = render_spectrogram(
                 freqs, t_sec, pwr, t_start=t_start_full,
-                title=f'{label} — nperseg={nperseg} + |B|',
+                title=f'{label} — |B| — nperseg={nperseg} + trace',
                 dpi=150)
             ax_ov = ax_comp.twinx()
             ax_ov.plot(bmag_ts_times.to_pydatetime(), bmag_ts_vals,
@@ -473,14 +473,14 @@ def run_region(label, trange):
 
                     fig_zr, ax_zr = render_spectrogram(
                         fz, tz, pz, t_start=t_start_zoom,
-                        title=f'{label} zoomed — nperseg={nperseg}',
+                        title=f'{label} zoomed — |B| — nperseg={nperseg}',
                         save_path=os.path.join(img_spec_zoom_raw, f'{label}_spectrogram_{nperseg}.png'),
                         dpi=150)
                     plt.close(fig_zr)
 
                     fig_zc, ax_zc = render_spectrogram(
                         fz, tz, pz, t_start=t_start_zoom,
-                        title=f'{label} zoomed — nperseg={nperseg} + |B|',
+                        title=f'{label} zoomed — |B| — nperseg={nperseg} + trace',
                         dpi=150)
                     ax_zov = ax_zc.twinx()
                     ax_zov.plot(ts_zoom_times.to_pydatetime(), ts_zoom_vals,

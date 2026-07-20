@@ -474,10 +474,10 @@ RESET = '\033[0m'
 # Version, Date, and Welcome Message for Plotbot
 #------------------------------------------------------------------------------
 
-__version__ = "2026_07_13_v1.15"
+__version__ = "2026_07_20_v1.16"
 
 # Commit message for this version
-__commit_message__ = "v1.15 Add duplicate timestamps notebook for Jaye, extend encounter tables through E28"
+__commit_message__ = "v1.16 LF spectrograms, spectrogram title fixes, new E28 audification trange"
 
 # Print the version and commit message
 print(f"""
