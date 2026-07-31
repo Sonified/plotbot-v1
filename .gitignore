@@ -23,6 +23,9 @@ data/cdf_files/Hamstrings/
 # Hamstrings encounter data (top-level)
 Hamstrings_E27/
 
+# SPICE kernels (large binary ephemeris files, ~330MB - download separately)
+data/psp/spice_data/
+
 .DS_Store
 .vscode/
 Thumbs.db
@@ -130,3 +133,4 @@ Example_Images/test_wavelet_scalogram.png
 
 # External repos
 hcs-magnetic-hole-analysis/
+Jaye_Meetings/

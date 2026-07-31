@@ -474,10 +474,10 @@ RESET = '\033[0m'
 # Version, Date, and Welcome Message for Plotbot
 #------------------------------------------------------------------------------
 
-__version__ = "2026_07_20_v1.16"
+__version__ = "2026_07_31_v1.17"
 
 # Commit message for this version
-__commit_message__ = "v1.16 LF spectrograms, spectrogram title fixes, new E28 audification trange"
+__commit_message__ = "v1.17 Feature: HAM angular binning pipeline for extending the ham overlay JSON to new encounters"
 
 # Print the version and commit message
 print(f"""
